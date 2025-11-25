@@ -575,23 +575,25 @@ export default function Admin() {
   const queueAllAthletes = async () => {
     setQueueingAll(true);
     try {
-      const response = await fetch('/api/queue/all', {
+      const response = await fetch('/api/admin/sync-all', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jobType: 'full_sync', priority: 0 }),
+        body: JSON.stringify({
+          admin_strava_id: currentAthleteId
+        }),
       });
 
       if (!response.ok) {
-        throw new Error('Failed to queue athletes');
+        throw new Error('Failed to trigger sync for all athletes');
       }
 
       const data = await response.json();
-      alert(`Successfully queued ${data.jobIds.length} athletes for sync`);
+      alert(`✅ ${data.message}`);
 
       // Refresh athletes list
       await fetchAthletes();
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to queue athletes');
+      alert(err instanceof Error ? err.message : 'Failed to trigger sync for all athletes');
     } finally {
       setQueueingAll(false);
     }
@@ -1235,8 +1237,8 @@ export default function Admin() {
 
       <div style={{ marginBottom: '2rem' }}>
         <p style={{ marginBottom: '1rem', fontSize: '0.9rem', color: '#666' }}>
-          The sync queue processes athlete syncs in batches, one at a time, with automatic retry on failure.
-          Jobs are processed every 2 minutes by the queue worker.
+          The rotation queue syncs each athlete once per week, automatically adjusting to athlete count.
+          Athletes are processed one at a time every 2 minutes.
         </p>
 
         <div style={{ marginTop: '1.5rem' }}>
@@ -1255,10 +1257,10 @@ export default function Admin() {
               opacity: queueingAll ? 0.6 : 1,
             }}
           >
-            {queueingAll ? <><i className="fa-solid fa-hourglass-half"></i> Queueing...</> : <><i className="fa-solid fa-rocket"></i> Queue All Athletes for Full Sync</>}
+            {queueingAll ? <><i className="fa-solid fa-hourglass-half"></i> Syncing...</> : <><i className="fa-solid fa-rotate"></i> Sync All Athletes</>}
           </button>
           <p style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: '#666' }}>
-            This will queue all connected athletes for a full sync. The queue processor will handle them one by one.
+            Trigger immediate sync for all athletes. Each will be processed according to the rotation queue.
           </p>
         </div>
       </div>
@@ -1419,10 +1421,10 @@ export default function Admin() {
                           onClick={() => triggerSync(athlete.id)}
                           disabled={syncing.has(athlete.id)}
                           className="button button-sync"
-                          title="Legacy: Queue athlete for full sync (high priority)"
+                          title="Trigger manual sync for this athlete"
                           style={{ fontSize: '0.85em', padding: '4px 8px' }}
                         >
-                          <i className="fa-solid fa-rocket"></i> Queue
+                          <i className="fa-solid fa-rotate"></i> Sync Now
                         </button>
                       </>
                     )}
