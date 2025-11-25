@@ -142,12 +142,13 @@ export async function getAdminAthletes(request: Request, env: Env): Promise<Resp
 }
 
 /**
- * PATCH /api/admin/athletes/:id - Update athlete admin fields
+ * PATCH /api/admin/athletes/:stravaId - Update athlete admin fields
+ * Note: athleteId parameter is actually a Strava ID
  */
 export async function updateAthlete(
   request: Request,
   env: Env,
-  athleteId: number
+  stravaIdParam: number
 ): Promise<Response> {
   try {
     const body = await request.json() as {
@@ -161,6 +162,20 @@ export async function updateAthlete(
       return new Response(
         JSON.stringify({ error: 'Unauthorized' }),
         { status: 403, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Convert Strava ID to internal athlete ID
+    const athlete = await env.DB.prepare(
+      'SELECT id FROM athletes WHERE strava_id = ?'
+    )
+      .bind(stravaIdParam)
+      .first<{ id: number }>();
+
+    if (!athlete) {
+      return new Response(
+        JSON.stringify({ error: 'Athlete not found' }),
+        { status: 404, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
@@ -188,7 +203,7 @@ export async function updateAthlete(
       );
     }
 
-    bindings.push(athleteId);
+    bindings.push(athlete.id);
 
     await env.DB.prepare(
       `UPDATE athletes SET ${updates.join(', ')} WHERE id = ?`
@@ -216,12 +231,13 @@ export async function updateAthlete(
 }
 
 /**
- * DELETE /api/admin/athletes/:id - Delete athlete and all their data
+ * DELETE /api/admin/athletes/:stravaId - Delete athlete and all their data
+ * Note: athleteId parameter is actually a Strava ID
  */
 export async function deleteAthlete(
   request: Request,
   env: Env,
-  athleteId: number
+  stravaIdParam: number
 ): Promise<Response> {
   try {
     const body = await request.json() as { admin_strava_id: number };
@@ -233,14 +249,28 @@ export async function deleteAthlete(
       );
     }
 
+    // Convert Strava ID to internal athlete ID
+    const athlete = await env.DB.prepare(
+      'SELECT id FROM athletes WHERE strava_id = ?'
+    )
+      .bind(stravaIdParam)
+      .first<{ id: number }>();
+
+    if (!athlete) {
+      return new Response(
+        JSON.stringify({ error: 'Athlete not found' }),
+        { status: 404, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
     // Delete all races first (foreign key constraint)
     await env.DB.prepare('DELETE FROM races WHERE athlete_id = ?')
-      .bind(athleteId)
+      .bind(athlete.id)
       .run();
 
     // Delete the athlete
     await env.DB.prepare('DELETE FROM athletes WHERE id = ?')
-      .bind(athleteId)
+      .bind(athlete.id)
       .run();
 
     return new Response(
@@ -263,16 +293,21 @@ export async function deleteAthlete(
 }
 
 /**
- * POST /api/admin/athletes/:id/sync - Trigger manual sync for athlete
+ * POST /api/admin/athletes/:stravaId/sync - Trigger manual sync for athlete
+ * Note: athleteId parameter is actually a Strava ID
  */
 export async function triggerAthleteSync(
   request: Request,
   env: Env,
   ctx: ExecutionContext,
-  athleteId: number
+  stravaIdParam: number
 ): Promise<Response> {
   try {
-    const body = await request.json() as { admin_strava_id: number };
+    const body = await request.json() as {
+      admin_strava_id: number;
+      after_date?: string;
+      before_date?: string;
+    };
 
     if (!body.admin_strava_id || !(await isAdmin(body.admin_strava_id, env))) {
       return new Response(
@@ -281,11 +316,11 @@ export async function triggerAthleteSync(
       );
     }
 
-    // Get athlete
+    // Get athlete by Strava ID
     const athlete = await env.DB.prepare(
-      'SELECT * FROM athletes WHERE id = ?'
+      'SELECT * FROM athletes WHERE strava_id = ?'
     )
-      .bind(athleteId)
+      .bind(stravaIdParam)
       .first<any>();
 
     if (!athlete) {
@@ -303,12 +338,15 @@ export async function triggerAthleteSync(
       );
     }
 
-    // Trigger MANUAL sync in background
+    // Trigger MANUAL sync in background with optional date range
     ctx.waitUntil(
       (async () => {
         try {
-          console.log(`[Admin] Triggering MANUAL sync for athlete ${athlete.strava_id} (ID: ${athleteId})`);
-          await syncAthleteNew(env, athlete, 'manual');
+          console.log(`[Admin] Triggering MANUAL sync for athlete ${athlete.strava_id} (ID: ${athlete.id})`);
+          await syncAthleteNew(env, athlete, 'manual', {
+            afterDate: body.after_date,
+            beforeDate: body.before_date,
+          });
           console.log(`[Admin] Manual sync completed successfully for athlete ${athlete.strava_id}`);
         } catch (error) {
           console.error(`[Admin] Manual sync failed for athlete ${athlete.strava_id}:`, error);
