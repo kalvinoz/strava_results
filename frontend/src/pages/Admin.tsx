@@ -877,69 +877,6 @@ export default function Admin() {
     }
   };
 
-  // WOOD-8: Trigger batched sync for large athletes
-  const triggerBatchedSync = async (athleteId: number, fullSync: boolean = true) => {
-    setSyncing((prev) => new Set(prev).add(athleteId));
-
-    try {
-      const response = await fetch(
-        `/api/admin/athletes/${athleteId}/batched-sync`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            admin_strava_id: currentAthleteId,
-            full_sync: fullSync
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error('Failed to start batched sync');
-      }
-
-      const data = await response.json();
-
-      // Show success message
-      const athlete = athletes.find(a => a.id === athleteId);
-      const athleteName = athlete ? `${athlete.firstname} ${athlete.lastname}` : `Athlete ${athleteId}`;
-      alert(`✅ ${fullSync ? 'Full' : 'Incremental'} batched sync started for ${athleteName}\n\nSession ID: ${data.session_id}\n\nThe sync will process in batches of 1,000 activities. Check the Sync Dashboard for progress.`);
-
-      // Refresh athletes to show updated state
-      await fetchAthletes();
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to start batched sync');
-    } finally {
-      setSyncing((prev) => {
-        const newSet = new Set(prev);
-        newSet.delete(athleteId);
-        return newSet;
-      });
-    }
-  };
-
-  const stopSync = async (athleteId: number) => {
-    try {
-      const response = await fetch(
-        `/api/admin/athletes/${athleteId}/sync/stop`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ admin_strava_id: currentAthleteId }),
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error('Failed to stop sync');
-      }
-
-      // Refresh athletes list to show updated status
-      fetchAthletes();
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to stop sync');
-    }
-  };
-
   const formatDate = (timestamp?: number) => {
     if (!timestamp) return 'Never';
     return new Date(timestamp * 1000).toLocaleString();
@@ -1398,36 +1335,14 @@ export default function Admin() {
                 </td>
                 <td>
                   <div className="action-buttons">
-                    {athlete.sync_status === 'in_progress' ? (
-                      <button
-                        onClick={() => stopSync(athlete.id)}
-                        className="button button-stop"
-                        title="Stop sync"
-                      >
-                        <i className="fa-solid fa-stop"></i> Stop
-                      </button>
-                    ) : (
-                      <>
-                        <button
-                          onClick={() => triggerBatchedSync(athlete.id, true)}
-                          disabled={syncing.has(athlete.id)}
-                          className="button button-sync"
-                          title="WOOD-8: Batched full sync (recommended for large athletes)"
-                          style={{ marginRight: '4px' }}
-                        >
-                          <i className="fa-solid fa-rotate"></i> Refresh
-                        </button>
-                        <button
-                          onClick={() => triggerSync(athlete.id)}
-                          disabled={syncing.has(athlete.id)}
-                          className="button button-sync"
-                          title="Trigger manual sync for this athlete"
-                          style={{ fontSize: '0.85em', padding: '4px 8px' }}
-                        >
-                          <i className="fa-solid fa-rotate"></i> Sync Now
-                        </button>
-                      </>
-                    )}
+                    <button
+                      onClick={() => triggerSync(athlete.id)}
+                      disabled={syncing.has(athlete.id) || athlete.current_sync_step !== 'idle'}
+                      className="button button-sync"
+                      title={athlete.current_sync_step !== 'idle' ? 'Sync in progress' : 'Trigger manual sync for this athlete'}
+                    >
+                      <i className="fa-solid fa-rotate"></i> Sync Now
+                    </button>
                     <button
                       onClick={() =>
                         deleteAthlete(
