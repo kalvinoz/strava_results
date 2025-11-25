@@ -809,7 +809,7 @@ export default function Admin() {
     }
   };
 
-  const deleteAthlete = async (athleteId: number, athleteName: string) => {
+  const deleteAthlete = async (stravaId: number, athleteName: string) => {
     if (
       !confirm(
         `Are you sure you want to delete ${athleteName}? This will remove all their data and races.`
@@ -820,7 +820,7 @@ export default function Admin() {
 
     try {
       const response = await fetch(
-        `/api/admin/athletes/${athleteId}`,
+        `/api/admin/athletes/${stravaId}`,
         {
           method: 'DELETE',
           headers: {
@@ -837,19 +837,19 @@ export default function Admin() {
       }
 
       // Remove from local state
-      setAthletes((prev) => prev.filter((a) => a.id !== athleteId));
+      setAthletes((prev) => prev.filter((a) => a.strava_id !== stravaId));
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to delete athlete');
     }
   };
 
-  const triggerSync = async (athleteId: number) => {
-    setSyncing((prev) => new Set(prev).add(athleteId));
+  const triggerSync = async (stravaId: number) => {
+    setSyncing((prev) => new Set(prev).add(stravaId));
 
     try {
-      // Trigger manual sync for this athlete
+      // Trigger manual sync for this athlete (using Strava ID)
       const response = await fetch(
-        `/api/admin/athletes/${athleteId}/sync`,
+        `/api/admin/athletes/${stravaId}/sync`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -866,8 +866,8 @@ export default function Admin() {
       const data = await response.json();
 
       // Show success message
-      const athlete = athletes.find(a => a.id === athleteId);
-      const athleteName = athlete ? `${athlete.firstname} ${athlete.lastname}` : `Athlete ${athleteId}`;
+      const athlete = athletes.find(a => a.strava_id === stravaId);
+      const athleteName = athlete ? `${athlete.firstname} ${athlete.lastname}` : `Athlete ${stravaId}`;
       alert(`✅ ${athleteName} sync triggered\n\n${data.message}`);
 
       // Refresh data to show updated state
@@ -877,7 +877,7 @@ export default function Admin() {
     } finally {
       setSyncing((prev) => {
         const newSet = new Set(prev);
-        newSet.delete(athleteId);
+        newSet.delete(stravaId);
         return newSet;
       });
     }
@@ -1350,8 +1350,8 @@ export default function Admin() {
                 <td>
                   <div className="action-buttons" style={{ gap: '0.25rem', justifyContent: 'center' }}>
                     <button
-                      onClick={() => triggerSync(athlete.id)}
-                      disabled={syncing.has(athlete.id) || athlete.current_sync_step !== 'idle'}
+                      onClick={() => triggerSync(athlete.strava_id)}
+                      disabled={syncing.has(athlete.strava_id) || athlete.current_sync_step !== 'idle'}
                       className="button button-sync"
                       title={athlete.current_sync_step !== 'idle' ? 'Sync in progress' : 'Sync now'}
                       style={{ padding: '0.4rem 0.6rem', fontSize: '0.9rem' }}
@@ -1361,7 +1361,7 @@ export default function Admin() {
                     <button
                       onClick={() =>
                         deleteAthlete(
-                          athlete.id,
+                          athlete.strava_id,
                           `${athlete.firstname} ${athlete.lastname}`
                         )
                       }
