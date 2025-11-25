@@ -21,12 +21,14 @@ interface AdminAthlete {
   last_synced_at?: number;
   created_at: number;
   race_count: number;
-  batch_progress?: {
-    total_batches: number;
-    completed_batches: number;
-    total_activities: number;
-    total_races_added: number;
-    current_batch?: number;
+  current_sync_step?: string;
+  last_sync_type?: 'auto' | 'manual';
+  next_sync_at?: number;
+  syncProgress?: {
+    total_activities_fetched: number;
+    runs_filtered: number;
+    races_filtered: number;
+    new_races_added: number;
   };
 }
 
@@ -61,14 +63,6 @@ interface EventStats {
   dates: string[];
   distances: string[];
   activity_count: number;
-}
-
-interface QueueStats {
-  pending: number;
-  processing: number;
-  completed_24h: number;
-  failed_24h: number;
-  total_queued: number;
 }
 
 interface ManualSubmission {
@@ -217,7 +211,6 @@ export default function Admin() {
   const [parkrunSortDirection, setParkrunSortDirection] = useState<ParkrunSortDirection>('desc');
   const [parkrunPage, setParkrunPage] = useState(0);
   const [parkrunSearch, setParkrunSearch] = useState('');
-  const [queueStats, setQueueStats] = useState<QueueStats | null>(null);
   const [queueingAll, setQueueingAll] = useState(false);
   const [manualSubmissions, setManualSubmissions] = useState<EditableSubmission[]>([]);
   const [approvedSubmissions, setApprovedSubmissions] = useState<ManualSubmission[]>([]);
@@ -258,15 +251,10 @@ export default function Admin() {
     fetchParkrunDuplicates();
     fetchEventSuggestions();
     fetchEvents();
-    fetchQueueStats();
     fetchManualSubmissions();
     fetchApprovedSubmissions();
     fetchSyncStatus();
     fetchApiKey();
-
-    // Poll queue stats every 30 seconds
-    const interval = setInterval(fetchQueueStats, 30000);
-    return () => clearInterval(interval);
   }, []);
 
   const fetchApiKey = async () => {
@@ -400,19 +388,6 @@ export default function Admin() {
       setEvents(data.events || []);
     } catch (error) {
       console.error('Failed to fetch events:', error);
-    }
-  };
-
-  const fetchQueueStats = async () => {
-    try {
-      const response = await fetch('/api/queue/stats');
-      if (!response.ok) {
-        throw new Error('Failed to fetch queue stats');
-      }
-      const data = await response.json();
-      setQueueStats(data);
-    } catch (err) {
-      console.error('Error fetching queue stats:', err);
     }
   };
 
@@ -613,8 +588,8 @@ export default function Admin() {
       const data = await response.json();
       alert(`Successfully queued ${data.jobIds.length} athletes for sync`);
 
-      // Refresh stats
-      await fetchQueueStats();
+      // Refresh athletes list
+      await fetchAthletes();
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to queue athletes');
     } finally {
@@ -864,21 +839,20 @@ export default function Admin() {
     setSyncing((prev) => new Set(prev).add(athleteId));
 
     try {
-      // Queue the athlete with high priority (10) so manual syncs are processed before weekly batch syncs
+      // Trigger manual sync for this athlete
       const response = await fetch(
-        `/api/queue/athletes/${athleteId}`,
+        `/api/admin/athletes/${athleteId}/sync`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            jobType: 'full_sync',
-            priority: 10  // Higher priority = processed first
+            admin_strava_id: currentAthleteId
           }),
         }
       );
 
       if (!response.ok) {
-        throw new Error('Failed to queue sync');
+        throw new Error('Failed to trigger sync');
       }
 
       const data = await response.json();
@@ -886,15 +860,12 @@ export default function Admin() {
       // Show success message
       const athlete = athletes.find(a => a.id === athleteId);
       const athleteName = athlete ? `${athlete.firstname} ${athlete.lastname}` : `Athlete ${athleteId}`;
-      alert(`✅ ${athleteName} has been queued for sync (Job #${data.jobId})\n\nThe sync will start within 2 minutes. Check the queue stats above for progress.`);
+      alert(`✅ ${athleteName} sync triggered\n\n${data.message}`);
 
       // Refresh data to show updated state
-      await Promise.all([
-        fetchAthletes(),
-        fetchQueueStats()
-      ]);
+      await fetchAthletes();
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to queue sync');
+      alert(err instanceof Error ? err.message : 'Failed to trigger sync');
     } finally {
       setSyncing((prev) => {
         const newSet = new Set(prev);
@@ -1001,18 +972,52 @@ export default function Admin() {
     }
   };
 
-  const getSyncStatusBadge = (status: string) => {
-    const statusClasses: Record<string, string> = {
-      completed: 'status-completed',
-      in_progress: 'status-in-progress',
-      error: 'status-error',
-      pending: 'status-pending',
-    };
+  const getSyncStatusBadge = (athlete: AdminAthlete) => {
+    const status = athlete.current_sync_step || 'idle';
+    const lastSyncType = athlete.last_sync_type;
+
+    // Determine status class based on current_sync_step
+    let statusClass = '';
+    let statusText = '';
+
+    if (status === 'error') {
+      statusClass = 'status-error';
+      statusText = 'FAILED';
+    } else if (status === 'completed') {
+      statusClass = 'status-completed';
+      statusText = '✓';
+    } else if (status === 'idle') {
+      statusClass = '';
+      statusText = '';
+    } else {
+      statusClass = 'status-in-progress';
+      statusText = status.replace(/_/g, ' ');
+    }
 
     return (
-      <span className={`status-badge ${statusClasses[status] || ''}`}>
-        {status}
-      </span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+        {statusText && (
+          <span className={`status-badge ${statusClass}`}>
+            {statusText}
+          </span>
+        )}
+        {lastSyncType && athlete.last_synced_at && (
+          <span
+            className="sync-type-badge"
+            title={lastSyncType === 'auto' ? 'Automatic sync' : 'Manual sync'}
+            style={{
+              fontSize: '0.75rem',
+              padding: '0.125rem 0.25rem',
+              borderRadius: '0.25rem',
+              backgroundColor: '#e2e8f0',
+              color: '#475569',
+              cursor: 'help'
+            }}
+          >
+            {lastSyncType === 'auto' ? 'A' : 'M'}
+          </span>
+        )}
+      </div>
     );
   };
 
@@ -1234,27 +1239,6 @@ export default function Admin() {
           Jobs are processed every 2 minutes by the queue worker.
         </p>
 
-        {queueStats && (
-          <div className="admin-stats">
-            <div className="stat-card">
-              <div className="stat-value">{queueStats.pending}</div>
-              <div className="stat-label"><i className="fa-solid fa-hourglass-half"></i> Pending Jobs</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-value">{queueStats.processing}</div>
-              <div className="stat-label"><i className="fa-solid fa-gear"></i> Processing</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-value">{queueStats.completed_24h}</div>
-              <div className="stat-label"><i className="fa-solid fa-check"></i> Completed (24h)</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-value">{queueStats.failed_24h}</div>
-              <div className="stat-label"><i className="fa-solid fa-xmark"></i> Failed (24h)</div>
-            </div>
-          </div>
-        )}
-
         <div style={{ marginTop: '1.5rem' }}>
           <button
             onClick={queueAllAthletes}
@@ -1289,6 +1273,7 @@ export default function Admin() {
               <th>Strava ID</th>
               <th>Sync Status</th>
               <th>Last Sync</th>
+              <th>Next Sync</th>
               <th onClick={() => handleSort('activities')} style={{ cursor: 'pointer' }}>
                 Activities {getSortIcon('activities', sortField, sortDirection)}
               </th>
@@ -1330,16 +1315,17 @@ export default function Admin() {
                 </td>
                 <td>
                   <div className="sync-status-cell">
-                    {getSyncStatusBadge(athlete.sync_status)}
+                    {getSyncStatusBadge(athlete)}
                     {athlete.sync_error && (
                       <div className="sync-error" title={athlete.sync_error}>
                         <i className="fa-solid fa-triangle-exclamation"></i>
                       </div>
                     )}
-                    {athlete.batch_progress && athlete.sync_status === 'in_progress' && (
+                    {athlete.syncProgress && athlete.current_sync_step && athlete.current_sync_step !== 'idle' && athlete.current_sync_step !== 'completed' && athlete.current_sync_step !== 'error' && (
                       <div style={{ fontSize: '0.75rem', marginTop: '0.25rem', color: '#64748b' }}>
-                        Batch {athlete.batch_progress.completed_batches}/{athlete.batch_progress.total_batches}
-                        {athlete.batch_progress.current_batch && ` (processing #${athlete.batch_progress.current_batch})`}
+                        {athlete.syncProgress.total_activities_fetched > 0 && `${athlete.syncProgress.total_activities_fetched} activities`}
+                        {athlete.syncProgress.races_filtered > 0 && ` · ${athlete.syncProgress.races_filtered} races`}
+                        {athlete.syncProgress.new_races_added > 0 && ` · ${athlete.syncProgress.new_races_added} new`}
                       </div>
                     )}
                   </div>
@@ -1347,19 +1333,22 @@ export default function Admin() {
                 <td className="date-cell">
                   {formatDate(athlete.last_synced_at)}
                 </td>
+                <td className="date-cell">
+                  {athlete.next_sync_at ? formatDate(athlete.next_sync_at) : '-'}
+                </td>
                 <td className="number-cell">
                   {athlete.total_activities_count}
-                  {athlete.batch_progress && athlete.sync_status === 'in_progress' && (
+                  {athlete.syncProgress && athlete.current_sync_step && athlete.current_sync_step !== 'idle' && athlete.current_sync_step !== 'completed' && athlete.current_sync_step !== 'error' && (
                     <div style={{ fontSize: '0.7rem', color: '#0ea5e9' }}>
-                      +{athlete.batch_progress.total_activities}
+                      +{athlete.syncProgress.total_activities_fetched}
                     </div>
                   )}
                 </td>
                 <td className="number-cell">
                   {athlete.race_count}
-                  {athlete.batch_progress && athlete.sync_status === 'in_progress' && athlete.batch_progress.total_races_added > 0 && (
+                  {athlete.syncProgress && athlete.current_sync_step && athlete.current_sync_step !== 'idle' && athlete.current_sync_step !== 'completed' && athlete.current_sync_step !== 'error' && athlete.syncProgress.new_races_added > 0 && (
                     <div style={{ fontSize: '0.7rem', color: '#22c55e' }}>
-                      +{athlete.batch_progress.total_races_added}
+                      +{athlete.syncProgress.new_races_added}
                     </div>
                   )}
                 </td>

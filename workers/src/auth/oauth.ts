@@ -18,7 +18,8 @@ export async function handleAuthorize(env: Env): Promise<Response> {
  */
 export async function handleCallback(
   request: Request,
-  env: Env
+  env: Env,
+  ctx: ExecutionContext
 ): Promise<Response> {
   const url = new URL(request.url);
   const code = url.searchParams.get('code');
@@ -153,8 +154,22 @@ export async function handleCallback(
 
     console.log(`Successfully connected Woodstock Runners member: ${tokenData.athlete.id} (new user: ${isNewUser})`);
 
-    // Note: New rotation-based sync will pick up this athlete automatically
-    // via the weekly rotation queue. No need to manually trigger sync here.
+    // For new users, trigger an immediate sync
+    if (isNewUser) {
+      try {
+        const { syncAthlete } = await import('../sync/rotation-sync');
+        const athlete = await getAthleteByStravaId(tokenData.athlete.id, env);
+        if (athlete) {
+          console.log(`Triggering initial sync for new athlete ${athlete.id}`);
+          // Trigger sync without blocking the OAuth response
+          // The rotation queue will automatically include this new athlete going forward
+          ctx.waitUntil(syncAthlete(env, athlete, 'auto'));
+        }
+      } catch (syncError) {
+        console.error(`Failed to trigger initial sync for new athlete:`, syncError);
+        // Don't fail the OAuth flow if sync fails
+      }
+    }
 
     // Return success HTML page that closes the popup or redirects
     return new Response(

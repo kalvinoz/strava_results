@@ -55,7 +55,7 @@ export default {
       }
 
       if (path === '/auth/callback' && request.method === 'GET') {
-        return handleCallback(request, env);
+        return handleCallback(request, env, ctx);
       }
 
       if (path === '/auth/disconnect' && request.method === 'DELETE') {

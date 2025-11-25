@@ -34,139 +34,75 @@ export interface ApiCommand {
 
 export const API_COMMANDS: ApiCommand[] = [
   // ========================================
-  // QUEUE MANAGEMENT
-  // ========================================
-  {
-    id: 'queue-stats',
-    category: 'queue',
-    name: 'Get Queue Statistics',
-    description: 'View current queue status including pending, processing, completed and failed jobs',
-    endpoint: '/api/queue/stats',
-    method: 'GET',
-    successMessage: 'Queue statistics retrieved successfully',
-  },
-  {
-    id: 'queue-all-athletes',
-    category: 'queue',
-    name: 'Queue All Athletes',
-    description: 'Add all athletes to the sync queue for batch processing',
-    endpoint: '/api/queue/all',
-    method: 'POST',
-    parameters: [
-      {
-        name: 'jobType',
-        type: 'select',
-        label: 'Job Type',
-        required: true,
-        default: 'full_sync',
-        options: [
-          { value: 'full_sync', label: 'Full Sync (All Activities)' },
-          { value: 'incremental_sync', label: 'Incremental Sync (Recent Only)' },
-        ],
-        description: 'Type of sync to perform',
-      },
-      {
-        name: 'priority',
-        type: 'number',
-        label: 'Priority',
-        default: 0,
-        description: 'Higher priority jobs are processed first',
-        validation: { min: -100, max: 100 },
-      },
-    ],
-    confirmMessage: 'This will queue all athletes for syncing. Continue?',
-    successMessage: 'All athletes queued successfully',
-  },
-  {
-    id: 'queue-cleanup',
-    category: 'queue',
-    name: 'Cleanup Old Jobs',
-    description: 'Remove completed and failed jobs older than 7 days',
-    endpoint: '/api/queue/cleanup',
-    method: 'POST',
-    confirmMessage: 'This will delete old completed and failed jobs. Continue?',
-    successMessage: 'Old jobs cleaned up successfully',
-  },
-  {
-    id: 'queue-cancel',
-    category: 'queue',
-    name: 'Cancel Pending Jobs',
-    description: 'Cancel specific pending jobs or clear the entire queue',
-    endpoint: '/api/queue/cancel',
-    method: 'POST',
-    parameters: [
-      {
-        name: 'jobIds',
-        type: 'json',
-        label: 'Job IDs (Optional)',
-        placeholder: '[123, 456, 789]',
-        description: 'Array of job IDs to cancel. Leave empty to cancel ALL pending jobs.',
-      },
-    ],
-    confirmMessage: 'This will cancel pending jobs. Continue?',
-    successMessage: 'Pending jobs cancelled successfully',
-    dangerous: true,
-  },
-
-  // ========================================
   // SYNC OPERATIONS
   // ========================================
+  {
+    id: 'sync-status',
+    category: 'sync',
+    name: 'Get Sync Status',
+    description: 'View current sync status including active and recent syncs',
+    endpoint: '/api/admin/sync-status',
+    method: 'GET',
+    successMessage: 'Sync status retrieved successfully',
+  },
+  {
+    id: 'sync-all-athletes',
+    category: 'sync',
+    name: 'Sync All Athletes',
+    description: 'Trigger sync for all athletes with optional date range',
+    endpoint: '/api/admin/sync-all',
+    method: 'POST',
+    parameters: [
+      {
+        name: 'after_date',
+        type: 'date',
+        label: 'After Date (Optional)',
+        placeholder: '2025-01-18',
+        description: 'Only sync activities after this date (ISO format: YYYY-MM-DD)',
+      },
+      {
+        name: 'before_date',
+        type: 'date',
+        label: 'Before Date (Optional)',
+        placeholder: '2025-01-25',
+        description: 'Only sync activities before this date (ISO format: YYYY-MM-DD)',
+      },
+    ],
+    confirmMessage: 'This will trigger sync for all athletes. Continue?',
+    successMessage: 'All athletes sync triggered successfully',
+  },
   {
     id: 'sync-athlete',
     category: 'sync',
     name: 'Trigger Athlete Sync',
     description: 'Manually trigger a sync for a specific athlete',
-    endpoint: '/api/sync/athlete/:stravaId',
+    endpoint: '/api/admin/athletes/:athleteId/sync',
     method: 'POST',
     parameters: [
       {
-        name: 'stravaId',
+        name: 'athleteId',
         type: 'number',
-        label: 'Strava ID',
+        label: 'Athlete ID',
         required: true,
-        placeholder: '151622',
-        description: 'The athlete\'s Strava ID',
+        placeholder: '42',
+        description: 'The athlete database ID (not Strava ID)',
       },
       {
-        name: 'fullSync',
-        type: 'checkbox',
-        label: 'Full Sync',
-        default: false,
-        description: 'Sync all activities (otherwise incremental)',
+        name: 'after_date',
+        type: 'date',
+        label: 'After Date (Optional)',
+        placeholder: '2025-01-18',
+        description: 'Only sync activities after this date (ISO format: YYYY-MM-DD)',
+      },
+      {
+        name: 'before_date',
+        type: 'date',
+        label: 'Before Date (Optional)',
+        placeholder: '2025-01-25',
+        description: 'Only sync activities before this date (ISO format: YYYY-MM-DD)',
       },
     ],
     successMessage: 'Athlete sync triggered successfully',
-  },
-  {
-    id: 'stop-athlete-sync',
-    category: 'sync',
-    name: 'Stop Athlete Sync',
-    description: 'Stop an in-progress sync for a specific athlete',
-    endpoint: '/api/sync/stop/:stravaId',
-    method: 'POST',
-    parameters: [
-      {
-        name: 'stravaId',
-        type: 'number',
-        label: 'Strava ID',
-        required: true,
-        placeholder: '151622',
-        description: 'The athlete\'s Strava ID',
-      },
-    ],
-    confirmMessage: 'This will stop the current sync for this athlete. Continue?',
-    successMessage: 'Athlete sync stopped successfully',
-    dangerous: true,
-  },
-  {
-    id: 'reset-stuck-syncs',
-    category: 'sync',
-    name: 'Reset Stuck Syncs',
-    description: 'Reset sync status for athletes stuck in "in_progress" state',
-    endpoint: '/api/sync/reset-stuck',
-    method: 'POST',
-    confirmMessage: 'This will reset all stuck syncs back to pending. Continue?',
-    successMessage: 'Stuck syncs reset successfully',
   },
 
   // ========================================
@@ -378,7 +314,6 @@ export const API_COMMANDS: ApiCommand[] = [
 ];
 
 export const API_CATEGORIES = [
-  { id: 'queue', label: 'Queue Management', description: 'Manage sync job queue' },
   { id: 'sync', label: 'Sync Operations', description: 'Trigger and manage athlete syncs' },
   { id: 'events', label: 'Event Management', description: 'Analyze and manage event names' },
   { id: 'races', label: 'Race Operations', description: 'Manage race data and visibility' },
