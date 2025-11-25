@@ -103,5 +103,6 @@ CREATE INDEX IF NOT EXISTS idx_sync_step_logs_session
 CREATE INDEX IF NOT EXISTS idx_sync_step_logs_athlete
     ON sync_step_logs(athlete_id, created_at DESC);
 
--- 7. Cleanup: Remove old athlete_sync_logs entries older than 30 days
-DELETE FROM athlete_sync_logs WHERE created_at < (strftime('%s', 'now') - 2592000);
+-- 7. Cleanup: Remove old athlete_sync_logs entries older than 30 days (if table exists)
+-- Note: This table may not exist in all environments, so we skip cleanup if it doesn't
+-- DELETE FROM athlete_sync_logs WHERE created_at < (strftime('%s', 'now') - 2592000);
