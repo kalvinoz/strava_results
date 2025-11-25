@@ -31,30 +31,58 @@ export async function getAdminAthletes(request: Request, env: Env): Promise<Resp
       );
     }
 
-    // Get all athletes with race count and new sync progress
-    const result = await env.DB.prepare(
-      `SELECT
-        a.id,
-        a.strava_id,
-        a.firstname,
-        a.lastname,
-        a.profile_photo,
-        a.is_admin,
-        a.is_hidden,
-        a.is_blocked,
-        a.sync_status,
-        a.sync_error,
-        a.current_sync_step,
-        a.last_sync_type,
-        a.total_activities_count,
-        a.last_synced_at,
-        a.created_at,
-        COALESCE(COUNT(DISTINCT r.id), 0) as race_count
-      FROM athletes a
-      LEFT JOIN races r ON r.athlete_id = a.id
-      GROUP BY a.id
-      ORDER BY a.lastname, a.firstname`
-    ).all();
+    // Get all athletes with race count
+    // Try new schema first, fall back to old if migration hasn't run
+    let result;
+    try {
+      result = await env.DB.prepare(
+        `SELECT
+          a.id,
+          a.strava_id,
+          a.firstname,
+          a.lastname,
+          a.profile_photo,
+          a.is_admin,
+          a.is_hidden,
+          a.is_blocked,
+          a.sync_status,
+          a.sync_error,
+          a.current_sync_step,
+          a.last_sync_type,
+          a.total_activities_count,
+          a.last_synced_at,
+          a.created_at,
+          COALESCE(COUNT(DISTINCT r.id), 0) as race_count
+        FROM athletes a
+        LEFT JOIN races r ON r.athlete_id = a.id
+        GROUP BY a.id
+        ORDER BY a.lastname, a.firstname`
+      ).all();
+    } catch (error) {
+      // Fall back to old schema (before migration)
+      console.log('Using old schema (migration not yet run)');
+      result = await env.DB.prepare(
+        `SELECT
+          a.id,
+          a.strava_id,
+          a.firstname,
+          a.lastname,
+          a.profile_photo,
+          a.is_admin,
+          a.is_hidden,
+          a.is_blocked,
+          a.sync_status,
+          a.sync_error,
+          a.total_activities_count,
+          a.last_synced_at,
+          a.created_at,
+          COALESCE(COUNT(DISTINCT r.id), 0) as race_count
+        FROM athletes a
+        LEFT JOIN races r ON r.athlete_id = a.id
+        GROUP BY a.id
+        ORDER BY a.lastname, a.firstname`
+      ).all();
+    }
 
     // Calculate next sync time for each athlete
     // Simple formula: distribute athletes evenly across 7 days
@@ -76,19 +104,24 @@ export async function getAdminAthletes(request: Request, env: Env): Promise<Resp
         athleteData.next_sync_at = nowSeconds + (i * secondsPerAthlete);
       }
 
-      // Get latest sync progress if currently syncing
+      // Get latest sync progress if currently syncing (only if new schema exists)
       if (athlete.current_sync_step && !['idle', 'completed', 'error'].includes(athlete.current_sync_step)) {
-        const syncProgress = await env.DB.prepare(
-          `SELECT * FROM sync_progress
-           WHERE athlete_id = ?
-           ORDER BY started_at DESC
-           LIMIT 1`
-        )
-          .bind(athlete.id)
-          .first<any>();
+        try {
+          const syncProgress = await env.DB.prepare(
+            `SELECT * FROM sync_progress
+             WHERE athlete_id = ?
+             ORDER BY started_at DESC
+             LIMIT 1`
+          )
+            .bind(athlete.id)
+            .first<any>();
 
-        if (syncProgress) {
-          athleteData.syncProgress = syncProgress;
+          if (syncProgress) {
+            athleteData.syncProgress = syncProgress;
+          }
+        } catch (error) {
+          // sync_progress table doesn't exist yet
+          console.log('sync_progress table not found, skipping progress query');
         }
       }
 
