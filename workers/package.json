@@ -12,10 +12,13 @@
     "migrate": "wrangler d1 migrations apply strava-club-db --local",
     "migrate:remote": "wrangler d1 migrations apply strava-club-db --remote"
   },
-  "dependencies": {},
+  "dependencies": {
+    "uuid": "^13.0.0"
+  },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241112.0",
-    "wrangler": "^4.47.0",
-    "typescript": "^5.6.3"
+    "@types/uuid": "^10.0.0",
+    "typescript": "^5.6.3",
+    "wrangler": "^4.47.0"
   }
 }

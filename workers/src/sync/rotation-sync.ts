@@ -377,7 +377,7 @@ async function fetchRaceDetails(
       );
 
       if (response.ok) {
-        const detailed = await response.json();
+        const detailed = (await response.json()) as StravaActivity;
         detailedActivities.set(race.id, detailed);
       } else {
         console.warn(`Failed to fetch details for activity ${race.id}: ${response.statusText}`);

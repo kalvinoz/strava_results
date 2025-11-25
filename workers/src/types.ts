@@ -24,6 +24,10 @@ export interface Athlete {
   created_at: number;
   updated_at: number;
   last_synced_at?: number;
+  current_sync_step?: string;
+  last_sync_type?: 'auto' | 'manual';
+  sync_status?: string;
+  sync_error?: string;
 }
 
 export interface Race {

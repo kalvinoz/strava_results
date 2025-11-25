@@ -536,10 +536,15 @@ export async function getAdminSyncLogs(
       );
     }
 
-    const logs = await getSyncLogs(env, sessionId);
+    // Fetch sync step logs from new system
+    const logs = await env.DB.prepare(
+      `SELECT * FROM sync_step_logs WHERE sync_session_id = ? ORDER BY created_at ASC`
+    )
+      .bind(sessionId)
+      .all();
 
     return new Response(
-      JSON.stringify({ logs }),
+      JSON.stringify({ logs: logs.results || [] }),
       {
         status: 200,
         headers: {
@@ -657,136 +662,82 @@ export async function getAdminSyncStatus(request: Request, env: Env): Promise<Re
       );
     }
 
-    // Get legacy queue status
-    const queueStatus = await getSyncQueueStatus(env);
-
-    // Get batched sync sessions (WOOD-8)
-    const batchedSyncs = await env.DB.prepare(`
+    // Get current sync progress (new system)
+    const activeSyncs = await env.DB.prepare(`
       SELECT
         a.id as athlete_id,
         a.strava_id,
         a.firstname,
         a.lastname,
-        a.sync_session_id,
-        sb.batch_type,
-        COUNT(*) as total_batches,
-        SUM(CASE WHEN sb.status = 'completed' THEN 1 ELSE 0 END) as completed_batches,
-        SUM(CASE WHEN sb.status = 'pending' THEN 1 ELSE 0 END) as pending_batches,
-        SUM(CASE WHEN sb.status = 'processing' THEN 1 ELSE 0 END) as processing_batches,
-        SUM(CASE WHEN sb.status = 'failed' THEN 1 ELSE 0 END) as failed_batches,
-        SUM(CASE WHEN sb.status = 'completed' THEN sb.activities_fetched ELSE 0 END) as activities_synced,
-        MIN(sb.created_at) as started_at,
-        MAX(sb.completed_at) as last_batch_completed_at
+        a.current_sync_step,
+        sp.sync_session_id,
+        sp.sync_type,
+        sp.total_activities_fetched,
+        sp.runs_filtered,
+        sp.races_filtered,
+        sp.new_races_added,
+        sp.started_at,
+        sp.completed_at,
+        sp.status,
+        sp.error_message
       FROM athletes a
-      JOIN sync_batches sb ON a.sync_session_id = sb.sync_session_id
-      WHERE a.sync_status = 'in_progress'
-        AND a.sync_session_id IS NOT NULL
-      GROUP BY a.id, a.strava_id, a.firstname, a.lastname, a.sync_session_id, sb.batch_type
-      ORDER BY MIN(sb.created_at) DESC
+      LEFT JOIN sync_progress sp ON a.id = sp.athlete_id
+      WHERE a.current_sync_step NOT IN ('idle', 'completed', 'error')
+        OR sp.status = 'running'
+      ORDER BY sp.started_at DESC
     `).all();
 
-    // Combine batched syncs into the active list with health check
-    const currentTime = Math.floor(Date.now() / 1000);
-    const STALL_THRESHOLD_SECONDS = 600; // 10 minutes without progress
+    const active = (activeSyncs.results || []).map((sync: any) => ({
+      id: sync.sync_session_id || `athlete-${sync.athlete_id}`,
+      athlete_id: sync.athlete_id,
+      strava_id: sync.strava_id,
+      first_name: sync.firstname,
+      last_name: sync.lastname,
+      current_step: sync.current_sync_step,
+      sync_type: sync.sync_type,
+      job_type: `${sync.sync_type}_sync`,
+      status: sync.status,
+      started_at: sync.started_at ? sync.started_at * 1000 : null,
+      total_activities_fetched: sync.total_activities_fetched || 0,
+      runs_filtered: sync.runs_filtered || 0,
+      races_filtered: sync.races_filtered || 0,
+      new_races_added: sync.new_races_added || 0,
+      error_message: sync.error_message,
+    }));
 
-    const batchedActive = (batchedSyncs.results || []).map((sync: any) => {
-      // Check if sync is stalled (no pending batches, but also no recent completion)
-      const isStalled =
-        sync.pending_batches === 0 &&
-        sync.processing_batches === 0 &&
-        sync.completed_batches > 0 &&
-        sync.completed_batches < sync.total_batches &&
-        (currentTime - (sync.last_batch_completed_at || sync.started_at)) > STALL_THRESHOLD_SECONDS;
-
-      // For enrichment syncs, check if there are races still needing enrichment
-      let warning = null;
-      if (isStalled && sync.batch_type === 'enrichment') {
-        warning = 'Sync appears stalled: no pending batches but sync not complete. System will auto-create missing batches.';
-      } else if (isStalled) {
-        warning = 'Sync appears stalled: no active batches and no recent progress';
-      }
-
-      return {
-        id: `batch-${sync.sync_session_id}`,
-        athlete_id: sync.athlete_id,
-        strava_id: sync.strava_id,
-        first_name: sync.firstname,
-        last_name: sync.lastname,
-        job_type: `batched_${sync.batch_type}`,
-        status: isStalled ? 'stalled' : 'processing',
-        started_at: sync.started_at * 1000,
-        activities_synced: sync.activities_synced,
-        total_activities_expected: null,
-        error_message: null,
-        created_at: sync.started_at * 1000,
-        completed_at: null,
-        // Health monitoring fields
-        health: {
-          total_batches: sync.total_batches,
-          completed_batches: sync.completed_batches,
-          pending_batches: sync.pending_batches,
-          processing_batches: sync.processing_batches,
-          failed_batches: sync.failed_batches,
-          is_stalled: isStalled,
-          warning: warning,
-          last_activity_at: (sync.last_batch_completed_at || sync.started_at) * 1000,
-        }
-      };
-    });
-
-    // Get batched syncs that are completed/failed (for recent list)
-    const completedBatchedSyncs = await env.DB.prepare(`
+    // Get recently completed syncs
+    const recentSyncs = await env.DB.prepare(`
       SELECT
-        a.id as athlete_id,
+        sp.*,
         a.strava_id,
         a.firstname,
-        a.lastname,
-        a.sync_session_id,
-        a.sync_status,
-        a.sync_error,
-        sb.batch_type,
-        COUNT(*) as total_batches,
-        SUM(CASE WHEN sb.status = 'completed' THEN 1 ELSE 0 END) as completed_batches,
-        SUM(CASE WHEN sb.status = 'failed' THEN 1 ELSE 0 END) as failed_batches,
-        SUM(CASE WHEN sb.status = 'completed' THEN sb.activities_fetched ELSE 0 END) as activities_synced,
-        SUM(CASE WHEN sb.status = 'completed' THEN sb.races_added ELSE 0 END) as races_added,
-        MIN(sb.created_at) as started_at,
-        MAX(sb.completed_at) as completed_at,
-        MAX(CASE WHEN sb.status = 'failed' THEN sb.error_message ELSE NULL END) as error_message
-      FROM athletes a
-      JOIN sync_batches sb ON a.sync_session_id = sb.sync_session_id
-      WHERE a.sync_status IN ('completed', 'failed', 'idle')
-        AND a.sync_session_id IS NOT NULL
-      GROUP BY a.id, a.strava_id, a.firstname, a.lastname, a.sync_session_id, a.sync_status, a.sync_error, sb.batch_type
-      ORDER BY MAX(sb.completed_at) DESC
+        a.lastname
+      FROM sync_progress sp
+      JOIN athletes a ON sp.athlete_id = a.id
+      WHERE sp.status IN ('completed', 'error')
+      ORDER BY sp.completed_at DESC
       LIMIT 10
     `).all();
 
-    // Format completed batched syncs for the recent list
-    const batchedRecent = (completedBatchedSyncs.results || []).map((sync: any) => {
-      const hasFailed = sync.failed_batches > 0 || sync.sync_status === 'failed';
-      return {
-        id: `batch-${sync.sync_session_id}`,
-        athlete_id: sync.athlete_id,
-        strava_id: sync.strava_id,
-        first_name: sync.firstname,
-        last_name: sync.lastname,
-        job_type: `batched_${sync.batch_type}`,
-        status: hasFailed ? 'failed' : 'completed',
-        started_at: sync.started_at ? sync.started_at * 1000 : null,
-        completed_at: sync.completed_at ? sync.completed_at * 1000 : null,
-        activities_synced: sync.activities_synced || 0,
-        races_added: sync.races_added || 0,
-        total_activities_expected: null,
-        error_message: sync.error_message || sync.sync_error || null,
-        created_at: sync.started_at ? sync.started_at * 1000 : null,
-      };
-    });
+    const recent = (recentSyncs.results || []).map((sync: any) => ({
+      id: sync.sync_session_id,
+      athlete_id: sync.athlete_id,
+      strava_id: sync.strava_id,
+      first_name: sync.firstname,
+      last_name: sync.lastname,
+      sync_type: sync.sync_type,
+      job_type: `${sync.sync_type}_sync`,
+      status: sync.status,
+      started_at: sync.started_at ? sync.started_at * 1000 : null,
+      completed_at: sync.completed_at ? sync.completed_at * 1000 : null,
+      total_activities_fetched: sync.total_activities_fetched || 0,
+      new_races_added: sync.new_races_added || 0,
+      error_message: sync.error_message,
+    }));
 
-    // Merge with legacy queue status
     const combinedStatus = {
-      active: [...queueStatus.active, ...batchedActive],
-      recent: [...batchedRecent, ...queueStatus.recent].slice(0, 10),
+      active,
+      recent,
     };
 
     return new Response(
@@ -844,9 +795,15 @@ export async function stopSyncJob(request: Request, env: Env): Promise<Response>
       );
     }
 
-    const stopped = await stopSync(body.sync_id, env);
+    // Stop sync by updating athlete's sync step to error
+    const result = await env.DB.prepare(
+      `UPDATE athletes SET current_sync_step = 'error', sync_status = 'error', sync_error = 'Stopped by admin'
+       WHERE id = (SELECT athlete_id FROM sync_progress WHERE sync_session_id = ? AND status = 'running')`
+    )
+      .bind(body.sync_id)
+      .run();
 
-    if (!stopped) {
+    if (!result.success) {
       return new Response(
         JSON.stringify({ error: 'Sync not found or already completed' }),
         {
@@ -919,9 +876,20 @@ export async function triggerBatchedAthleteSync(
       .bind(athleteId)
       .first<{ sync_status: string; sync_session_id: string }>();
 
+    // Note: This endpoint uses old batched sync system which has been deprecated
+    // Kept for backwards compatibility but should use the new rotation sync instead
+    return new Response(
+      JSON.stringify({
+        error: 'This endpoint is deprecated. Use POST /api/admin/athletes/:id/sync instead'
+      }),
+      { status: 410, headers: { 'Content-Type': 'application/json' } }
+    );
+
+    /*
+    // OLD CODE - kept for reference
     if (currentStatus?.sync_status === 'in_progress' && currentStatus.sync_session_id) {
       console.log(`[WOOD-8] Cancelling existing sync session ${currentStatus.sync_session_id}`);
-      await cancelSession(currentStatus.sync_session_id, env);
+      // await cancelSession(currentStatus.sync_session_id, env);
     }
 
     // Initiate new two-phase batched sync (discovery + enrichment)
@@ -949,11 +917,12 @@ export async function triggerBatchedAthleteSync(
         },
       }
     );
+    */
   } catch (error) {
-    console.error('[WOOD-8] Error triggering batched sync:', error);
+    console.error('Error triggering batched sync:', error);
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     const errorDetails = error instanceof Error ? error.stack : String(error);
-    console.error('[WOOD-8] Error details:', errorDetails);
+    console.error('Error details:', errorDetails);
 
     return new Response(
       JSON.stringify({
@@ -985,15 +954,24 @@ export async function getBatchedSyncProgress(
       );
     }
 
-    // Get session summary and batches
-    const summary = await getSessionSummary(sessionId, env);
-    const batches = await getSessionBatches(sessionId, env);
+    // Get sync progress from new system
+    const progress = await env.DB.prepare(
+      `SELECT * FROM sync_progress WHERE sync_session_id = ?`
+    )
+      .bind(sessionId)
+      .first();
+
+    const logs = await env.DB.prepare(
+      `SELECT * FROM sync_step_logs WHERE sync_session_id = ? ORDER BY created_at ASC`
+    )
+      .bind(sessionId)
+      .all();
 
     return new Response(
       JSON.stringify({
         session_id: sessionId,
-        summary,
-        batches,
+        progress,
+        logs: logs.results || [],
       }),
       {
         status: 200,
