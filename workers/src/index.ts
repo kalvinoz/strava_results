@@ -7,7 +7,7 @@ import { syncAthlete } from './queue/sync-queue';
 import { processPendingBatches } from './cron/batch-processor-cron';
 import { healthCheckBatchedSyncs } from './cron/sync-health-monitor';
 import { getRaces, getStats, getAthletes, updateRaceTime, updateRaceDistance, updateRaceEvent, updateRaceVisibility, bulkEditRaces, fetchRaceDescription } from './api/races';
-import { getAdminAthletes, updateAthlete, deleteAthlete, triggerAthleteSync, stopAthleteSync, resetStuckSyncs, getAdminSyncLogs, checkAdmin, getAdminSyncStatus, stopSyncJob, triggerBatchedAthleteSync, getBatchedSyncProgress, getAdminApiKey } from './api/admin';
+import { getAdminAthletes, updateAthlete, deleteAthlete, triggerAthleteSync, triggerSyncAll, stopAthleteSync, resetStuckSyncs, getAdminSyncLogs, checkAdmin, getAdminSyncStatus, stopSyncJob, triggerBatchedAthleteSync, getBatchedSyncProgress, getAdminApiKey } from './api/admin';
 import { getReviewActivities, updateActivity } from './api/admin-review';
 import { getParkrunResults, getParkrunStats, getParkrunAthletes, updateParkrunAthlete, getParkrunByDate, getParkrunWeeklySummary, getParkrunDuplicates, getParkrunMilestones } from './api/parkrun';
 import { importParkrunCSV } from './api/parkrun-import';
@@ -144,6 +144,11 @@ export default {
       const adminSyncMatch = path.match(/^\/api\/admin\/athletes\/(\d+)\/sync$/);
       if (adminSyncMatch && request.method === 'POST') {
         return triggerAthleteSync(request, env, ctx, parseInt(adminSyncMatch[1]));
+      }
+
+      // Sync all athletes (with optional date range)
+      if (path === '/api/admin/sync-all' && request.method === 'POST') {
+        return triggerSyncAll(request, env, ctx);
       }
 
       // Stop sync

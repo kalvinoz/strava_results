@@ -3,7 +3,6 @@
 import { Env } from '../types';
 import { buildAuthorizationUrl, exchangeCodeForToken, getAthleteClubs } from '../utils/strava';
 import { upsertAthlete, getAthleteByStravaId } from '../utils/db';
-import { createSyncJob } from '../queue/queue-processor';
 
 /**
  * Handle GET /auth/authorize - redirect to Strava OAuth
@@ -154,21 +153,8 @@ export async function handleCallback(
 
     console.log(`Successfully connected Woodstock Runners member: ${tokenData.athlete.id} (new user: ${isNewUser})`);
 
-    // Queue athlete for data sync ONLY if this is a new user (first time sign-up)
-    if (isNewUser) {
-      try {
-        // Get the athlete's internal database ID for queueing
-        const athlete = await getAthleteByStravaId(tokenData.athlete.id, env);
-        if (athlete) {
-          const jobId = await createSyncJob(env, athlete.id, 'full_sync', 100, 3);
-          console.log(`Queued sync job ${jobId} for new athlete ${tokenData.athlete.id} (db id: ${athlete.id})`);
-        }
-      } catch (error) {
-        console.error(`Failed to queue sync for new athlete ${tokenData.athlete.id}:`, error);
-      }
-    } else {
-      console.log(`Existing user ${tokenData.athlete.id} re-authenticated - not queuing sync`);
-    }
+    // Note: New rotation-based sync will pick up this athlete automatically
+    // via the weekly rotation queue. No need to manually trigger sync here.
 
     // Return success HTML page that closes the popup or redirects
     return new Response(

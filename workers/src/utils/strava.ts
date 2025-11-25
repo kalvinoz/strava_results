@@ -324,6 +324,6 @@ export function buildAuthorizationUrl(env: Env): string {
   url.searchParams.set('client_id', env.STRAVA_CLIENT_ID);
   url.searchParams.set('redirect_uri', env.STRAVA_REDIRECT_URI);
   url.searchParams.set('response_type', 'code');
-  url.searchParams.set('scope', 'read,activity:read_all');
+  url.searchParams.set('scope', 'read,activity:read'); // Only request public activities
   return url.toString();
 }

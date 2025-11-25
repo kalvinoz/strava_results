@@ -1,9 +1,6 @@
 // Admin API endpoints
 import { Env } from '../types';
-import { syncAthlete, getSyncQueueStatus, stopSync } from '../queue/sync-queue';
-import { getSyncLogs } from '../utils/sync-logger';
-import { initiateBatchedSync } from '../queue/batch-processor';
-import { getSessionSummary, getSessionBatches, cancelSession } from '../utils/batch-manager';
+import { syncAthlete as syncAthleteNew } from '../sync/rotation-sync';
 
 /**
  * Check if a user is an admin
@@ -34,7 +31,7 @@ export async function getAdminAthletes(request: Request, env: Env): Promise<Resp
       );
     }
 
-    // Get all athletes with race count and batched sync progress
+    // Get all athletes with race count and new sync progress
     const result = await env.DB.prepare(
       `SELECT
         a.id,
@@ -47,7 +44,8 @@ export async function getAdminAthletes(request: Request, env: Env): Promise<Resp
         a.is_blocked,
         a.sync_status,
         a.sync_error,
-        a.sync_session_id,
+        a.current_sync_step,
+        a.last_sync_type,
         a.total_activities_count,
         a.last_synced_at,
         a.created_at,
@@ -58,59 +56,39 @@ export async function getAdminAthletes(request: Request, env: Env): Promise<Resp
       ORDER BY a.lastname, a.firstname`
     ).all();
 
-    // Get all sync session IDs that need batch progress
-    const sessionIds = (result.results || [])
-      .filter((a: any) => a.sync_session_id)
-      .map((a: any) => a.sync_session_id);
+    // Calculate next sync time for each athlete
+    // Simple formula: distribute athletes evenly across 7 days
+    const totalAthletes = result.results.length;
+    const SYNC_INTERVAL_DAYS = 7;
+    const secondsPerAthlete = (SYNC_INTERVAL_DAYS * 24 * 60 * 60) / Math.max(totalAthletes, 1);
 
-    // Fetch all batch summaries in one query (fixes N+1 problem)
-    const batchSummaryMap = new Map<string, any>();
-
-    if (sessionIds.length > 0) {
-      const placeholders = sessionIds.map(() => '?').join(', ');
-      const batchSummaries = await env.DB.prepare(
-        `SELECT
-          sync_session_id,
-          COUNT(*) as total_batches,
-          SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_batches,
-          SUM(CASE WHEN status = 'completed' THEN activities_fetched ELSE 0 END) as total_activities,
-          SUM(CASE WHEN status = 'completed' THEN races_added ELSE 0 END) as total_races_added,
-          SUM(CASE WHEN status = 'completed' THEN races_removed ELSE 0 END) as total_races_removed,
-          MAX(CASE WHEN status = 'processing' THEN batch_number ELSE NULL END) as current_batch,
-          MIN(created_at) as started_at,
-          MAX(completed_at) as completed_at,
-          MAX(CASE WHEN status = 'failed' THEN error_message ELSE NULL END) as error_message
-        FROM sync_batches
-        WHERE sync_session_id IN (${placeholders})
-        GROUP BY sync_session_id`
-      ).bind(...sessionIds).all();
-
-      for (const summary of (batchSummaries.results || []) as any[]) {
-        batchSummaryMap.set(summary.sync_session_id, summary);
-      }
-    }
-
-    // Build athletes with progress using the pre-fetched batch summaries
     const athletesWithProgress = [];
-    for (const athlete of result.results) {
+    for (let i = 0; i < result.results.length; i++) {
+      const athlete: any = result.results[i];
       const athleteData: any = { ...athlete };
 
-      // Get batch progress for any athlete with a sync_session_id (including completed/failed)
-      if (athlete.sync_session_id) {
-        const batchSummary = batchSummaryMap.get(athlete.sync_session_id as string);
+      // Calculate next scheduled sync time
+      if (athlete.last_synced_at) {
+        athleteData.next_sync_at = athlete.last_synced_at + (SYNC_INTERVAL_DAYS * 24 * 60 * 60);
+      } else {
+        // Never synced - should be picked up soon
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        athleteData.next_sync_at = nowSeconds + (i * secondsPerAthlete);
+      }
 
-        if (batchSummary && (batchSummary.total_batches as number) > 0) {
-          athleteData.batch_progress = {
-            total_batches: batchSummary.total_batches || 0,
-            completed_batches: batchSummary.completed_batches || 0,
-            total_activities: batchSummary.total_activities || 0,
-            total_races_added: batchSummary.total_races_added || 0,
-            total_races_removed: batchSummary.total_races_removed || 0,
-            current_batch: batchSummary.current_batch,
-            started_at: batchSummary.started_at,
-            completed_at: batchSummary.completed_at,
-            error_message: batchSummary.error_message,
-          };
+      // Get latest sync progress if currently syncing
+      if (athlete.current_sync_step && !['idle', 'completed', 'error'].includes(athlete.current_sync_step)) {
+        const syncProgress = await env.DB.prepare(
+          `SELECT * FROM sync_progress
+           WHERE athlete_id = ?
+           ORDER BY started_at DESC
+           LIMIT 1`
+        )
+          .bind(athlete.id)
+          .first<any>();
+
+        if (syncProgress) {
+          athleteData.syncProgress = syncProgress;
         }
       }
 
@@ -273,12 +251,12 @@ export async function triggerAthleteSync(
       );
     }
 
-    // Get athlete strava_id
+    // Get athlete
     const athlete = await env.DB.prepare(
-      'SELECT strava_id FROM athletes WHERE id = ?'
+      'SELECT * FROM athletes WHERE id = ?'
     )
       .bind(athleteId)
-      .first<{ strava_id: number }>();
+      .first<any>();
 
     if (!athlete) {
       return new Response(
@@ -288,58 +266,28 @@ export async function triggerAthleteSync(
     }
 
     // Check if already syncing
-    const currentStatus = await env.DB.prepare(
-      'SELECT sync_status FROM athletes WHERE id = ?'
-    )
-      .bind(athleteId)
-      .first<{ sync_status: string }>();
-
-    // If already in_progress, cancel it by resetting to completed first
-    if (currentStatus?.sync_status === 'in_progress') {
-      console.log(`Athlete ${athlete.strava_id} already syncing - cancelling previous sync`);
-      await env.DB.prepare(
-        "UPDATE athletes SET sync_status = 'completed', sync_error = 'Cancelled by user' WHERE id = ?"
-      )
-        .bind(athleteId)
-        .run();
+    if (athlete.current_sync_step && !['idle', 'completed', 'error'].includes(athlete.current_sync_step)) {
+      return new Response(
+        JSON.stringify({ error: 'Athlete is already syncing', current_step: athlete.current_sync_step }),
+        { status: 409, headers: { 'Content-Type': 'application/json' } }
+      );
     }
 
-    // Generate unique session ID for tracking this sync
-    const sessionId = `sync-${athleteId}-${Date.now()}`;
-
-    // Update status to in_progress for the new sync
-    await env.DB.prepare(
-      "UPDATE athletes SET sync_status = 'in_progress', sync_error = NULL WHERE id = ?"
-    )
-      .bind(athleteId)
-      .run();
-
-    // Trigger FULL sync in background (not incremental)
-    // This will fetch all activities from scratch and is useful for fixing issues
+    // Trigger MANUAL sync in background
     ctx.waitUntil(
       (async () => {
         try {
-          console.log(`Admin triggering FULL REFRESH for athlete ${athlete.strava_id} (ID: ${athleteId}, session: ${sessionId})`);
-          await syncAthlete(athlete.strava_id, env, false, true, ctx, undefined, sessionId);
-          console.log(`Admin sync completed successfully for athlete ${athlete.strava_id}`);
+          console.log(`[Admin] Triggering MANUAL sync for athlete ${athlete.strava_id} (ID: ${athleteId})`);
+          await syncAthleteNew(env, athlete, 'manual');
+          console.log(`[Admin] Manual sync completed successfully for athlete ${athlete.strava_id}`);
         } catch (error) {
-          console.error(`Admin sync failed for athlete ${athlete.strava_id}:`, error);
-          // Ensure status is updated to error
-          try {
-            await env.DB.prepare(
-              "UPDATE athletes SET sync_status = 'error', sync_error = ? WHERE id = ?"
-            )
-              .bind(error instanceof Error ? error.message : String(error), athleteId)
-              .run();
-          } catch (dbError) {
-            console.error(`Failed to update error status for athlete ${athleteId}:`, dbError);
-          }
+          console.error(`[Admin] Manual sync failed for athlete ${athlete.strava_id}:`, error);
         }
       })()
     );
 
     return new Response(
-      JSON.stringify({ success: true, message: 'Sync triggered', session_id: sessionId }),
+      JSON.stringify({ success: true, message: 'Manual sync triggered' }),
       {
         status: 200,
         headers: {
@@ -352,6 +300,99 @@ export async function triggerAthleteSync(
     console.error('Error triggering sync:', error);
     return new Response(
       JSON.stringify({ error: 'Failed to trigger sync' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+}
+
+/**
+ * POST /api/admin/sync-all - Trigger sync for all athletes with optional date range
+ */
+export async function triggerSyncAll(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext
+): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      admin_strava_id: number;
+      after_date?: string; // ISO date (YYYY-MM-DD)
+      before_date?: string; // ISO date (YYYY-MM-DD)
+    };
+
+    if (!body.admin_strava_id || !(await isAdmin(body.admin_strava_id, env))) {
+      return new Response(
+        JSON.stringify({ error: 'Unauthorized' }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Get all athletes
+    const athletes = await env.DB.prepare(
+      `SELECT * FROM athletes WHERE access_token IS NOT NULL AND is_blocked = 0`
+    ).all<any>();
+
+    if (!athletes.results || athletes.results.length === 0) {
+      return new Response(
+        JSON.stringify({ error: 'No athletes found' }),
+        { status: 404, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const totalAthletes = athletes.results.length;
+
+    // Trigger sync for all athletes in background
+    ctx.waitUntil(
+      (async () => {
+        console.log(`[Admin] Sync All: Starting sync for ${totalAthletes} athletes`);
+
+        for (const athlete of athletes.results) {
+          try {
+            // Check if already syncing
+            if (athlete.current_sync_step && !['idle', 'completed', 'error'].includes(athlete.current_sync_step)) {
+              console.log(`[Admin] Skipping athlete ${athlete.strava_id} - already syncing`);
+              continue;
+            }
+
+            await syncAthleteNew(env, athlete, 'manual', {
+              afterDate: body.after_date,
+              beforeDate: body.before_date,
+            });
+
+            console.log(`[Admin] Sync All: Completed athlete ${athlete.strava_id}`);
+
+            // Small delay to avoid overwhelming the system
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          } catch (error) {
+            console.error(`[Admin] Sync All: Failed for athlete ${athlete.strava_id}:`, error);
+            // Continue with next athlete
+          }
+        }
+
+        console.log(`[Admin] Sync All: Completed for all ${totalAthletes} athletes`);
+      })()
+    );
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        message: `Sync triggered for ${totalAthletes} athletes`,
+        date_range: body.after_date || body.before_date
+          ? { after: body.after_date || 'all', before: body.before_date || 'now' }
+          : null,
+      }),
+      {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        },
+      }
+    );
+  } catch (error) {
+    console.error('Error triggering sync all:', error);
+    return new Response(
+      JSON.stringify({ error: 'Failed to trigger sync all' }),
       { status: 500, headers: { 'Content-Type': 'application/json' } }
     );
   }
