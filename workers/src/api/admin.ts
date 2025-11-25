@@ -338,24 +338,55 @@ export async function triggerAthleteSync(
       );
     }
 
-    // Trigger MANUAL sync in background with optional date range
+    // Create sync_progress record first
+    const sessionId = crypto.randomUUID();
+    const startedAt = Math.floor(Date.now() / 1000);
+
+    await env.DB.prepare(
+      `INSERT INTO sync_progress (
+        athlete_id, sync_session_id, current_step, status, sync_type, started_at
+      ) VALUES (?, ?, ?, ?, ?, ?)`
+    )
+      .bind(athlete.id, sessionId, 'queued', 'running', 'manual', startedAt)
+      .run();
+
+    await env.DB.prepare(
+      `UPDATE athletes SET current_sync_step = 'queued' WHERE id = ?`
+    )
+      .bind(athlete.id)
+      .run();
+
+    console.log(`[Admin] Created sync session ${sessionId} for athlete ${athlete.strava_id}`);
+
+    // Trigger sync by making internal fetch call (fire-and-forget)
+    // This ensures the sync actually starts in a separate Worker invocation
+    const syncUrl = new URL(request.url);
+    syncUrl.pathname = `/internal/sync/${athlete.strava_id}`;
+    syncUrl.search = '';
+
     ctx.waitUntil(
-      (async () => {
-        try {
-          console.log(`[Admin] Triggering MANUAL sync for athlete ${athlete.strava_id} (ID: ${athlete.id})`);
-          await syncAthleteNew(env, athlete, 'manual', {
-            afterDate: body.after_date,
-            beforeDate: body.before_date,
-          });
-          console.log(`[Admin] Manual sync completed successfully for athlete ${athlete.strava_id}`);
-        } catch (error) {
-          console.error(`[Admin] Manual sync failed for athlete ${athlete.strava_id}:`, error);
-        }
-      })()
+      fetch(syncUrl.toString(), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Internal-Request': 'true',
+        },
+        body: JSON.stringify({
+          session_id: sessionId,
+          after_date: body.after_date,
+          before_date: body.before_date,
+        }),
+      }).catch((error) => {
+        console.error(`[Admin] Failed to trigger internal sync:`, error);
+      })
     );
 
     return new Response(
-      JSON.stringify({ success: true, message: 'Manual sync triggered' }),
+      JSON.stringify({
+        success: true,
+        message: 'Manual sync queued. Check the Sync Dashboard tab for progress.',
+        session_id: sessionId,
+      }),
       {
         status: 200,
         headers: {

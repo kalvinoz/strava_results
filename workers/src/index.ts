@@ -570,6 +570,60 @@ export default {
         });
       }
 
+      // Internal sync endpoint (triggered by triggerAthleteSync via fetch)
+      const internalSyncMatch = path.match(/^\/internal\/sync\/(\d+)$/);
+      if (internalSyncMatch && request.method === 'POST') {
+        const stravaId = parseInt(internalSyncMatch[1]);
+
+        try {
+          const body = await request.json() as {
+            session_id: string;
+            after_date?: string;
+            before_date?: string;
+          };
+
+          // Get athlete
+          const athlete = await env.DB.prepare(
+            'SELECT * FROM athletes WHERE strava_id = ?'
+          )
+            .bind(stravaId)
+            .first<any>();
+
+          if (!athlete) {
+            console.error(`[Internal Sync] Athlete ${stravaId} not found`);
+            return new Response(
+              JSON.stringify({ error: 'Athlete not found' }),
+              { status: 404, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+
+          console.log(`[Internal Sync] Starting sync for athlete ${stravaId} (session: ${body.session_id})`);
+
+          // Import and run sync (this will run synchronously in this Worker invocation)
+          const { syncAthlete: syncAthleteNew } = await import('./sync/rotation-sync');
+
+          // Execute sync immediately (not in waitUntil) with existing session ID
+          await syncAthleteNew(env, athlete, 'manual', {
+            afterDate: body.after_date,
+            beforeDate: body.before_date,
+            sessionId: body.session_id,
+          });
+
+          console.log(`[Internal Sync] Completed sync for athlete ${stravaId}`);
+
+          return new Response(
+            JSON.stringify({ success: true }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        } catch (error) {
+          console.error(`[Internal Sync] Error syncing athlete ${stravaId}:`, error);
+          return new Response(
+            JSON.stringify({ error: 'Sync failed' }),
+            { status: 500, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+      }
+
       // Health check
       if (path === '/health') {
         return new Response(JSON.stringify({ status: 'healthy' }), {

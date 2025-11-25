@@ -504,9 +504,10 @@ export async function syncAthlete(
   options?: {
     afterDate?: string; // ISO date string (YYYY-MM-DD)
     beforeDate?: string; // ISO date string (YYYY-MM-DD)
+    sessionId?: string; // Optional: use existing session ID (for manual syncs)
   }
 ): Promise<void> {
-  const sessionId = uuidv4();
+  const sessionId = options?.sessionId || uuidv4();
   const startedAt = Math.floor(Date.now() / 1000);
 
   const dateRangeMsg = options?.afterDate || options?.beforeDate
@@ -516,14 +517,16 @@ export async function syncAthlete(
   console.log(`[RotationSync] Starting ${syncType} sync for athlete ${athlete.strava_id}${dateRangeMsg} (session: ${sessionId})`);
 
   try {
-    // Create sync progress record
-    await env.DB.prepare(
-      `INSERT INTO sync_progress (
-        athlete_id, sync_session_id, current_step, status, sync_type, started_at
-      ) VALUES (?, ?, ?, ?, ?, ?)`
-    )
-      .bind(athlete.id, sessionId, 'queued', 'running', syncType, startedAt)
-      .run();
+    // Create sync progress record (only if not already created)
+    if (!options?.sessionId) {
+      await env.DB.prepare(
+        `INSERT INTO sync_progress (
+          athlete_id, sync_session_id, current_step, status, sync_type, started_at
+        ) VALUES (?, ?, ?, ?, ?, ?)`
+      )
+        .bind(athlete.id, sessionId, 'queued', 'running', syncType, startedAt)
+        .run();
+    }
 
     await updateSyncStep(env, athlete.id, 'queued');
     await logSyncStep(env, sessionId, athlete.id, 'queued', 'info', `Sync queued and starting${dateRangeMsg}`);
