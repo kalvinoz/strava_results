@@ -877,9 +877,17 @@ export default function Admin() {
     }
   };
 
-  const formatDate = (timestamp?: number) => {
+  const formatCompactDate = (timestamp?: number) => {
     if (!timestamp) return 'Never';
-    return new Date(timestamp * 1000).toLocaleString();
+    const date = new Date(timestamp * 1000);
+    const dateStr = date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' });
+    const timeStr = date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
+    return (
+      <div style={{ fontSize: '0.8rem', lineHeight: '1.2' }}>
+        <div>{dateStr}</div>
+        <div style={{ color: '#666' }}>{timeStr}</div>
+      </div>
+    );
   };
 
   const updateParkrunAthleteVisibility = async (
@@ -1269,13 +1277,13 @@ export default function Admin() {
                     )}
                   </div>
                 </td>
-                <td className="date-cell">
-                  {formatDate(athlete.last_synced_at)}
+                <td className="date-cell" style={{ fontSize: '0.8rem' }}>
+                  {formatCompactDate(athlete.last_synced_at)}
                 </td>
-                <td className="date-cell">
-                  {athlete.next_sync_at ? formatDate(athlete.next_sync_at) : '-'}
+                <td className="date-cell" style={{ fontSize: '0.8rem' }}>
+                  {athlete.next_sync_at ? formatCompactDate(athlete.next_sync_at) : '-'}
                 </td>
-                <td className="number-cell">
+                <td className="number-cell" style={{ fontSize: '0.85rem' }}>
                   {athlete.total_activities_count}
                   {athlete.syncProgress && athlete.current_sync_step && athlete.current_sync_step !== 'idle' && athlete.current_sync_step !== 'completed' && athlete.current_sync_step !== 'error' && (
                     <div style={{ fontSize: '0.7rem', color: '#0ea5e9' }}>
@@ -1283,7 +1291,7 @@ export default function Admin() {
                     </div>
                   )}
                 </td>
-                <td className="number-cell">
+                <td className="number-cell" style={{ fontSize: '0.85rem' }}>
                   {athlete.race_count}
                   {athlete.syncProgress && athlete.current_sync_step && athlete.current_sync_step !== 'idle' && athlete.current_sync_step !== 'completed' && athlete.current_sync_step !== 'error' && athlete.syncProgress.new_races_added > 0 && (
                     <div style={{ fontSize: '0.7rem', color: '#22c55e' }}>
@@ -1334,14 +1342,15 @@ export default function Admin() {
                   />
                 </td>
                 <td>
-                  <div className="action-buttons">
+                  <div className="action-buttons" style={{ gap: '0.25rem', justifyContent: 'center' }}>
                     <button
                       onClick={() => triggerSync(athlete.id)}
                       disabled={syncing.has(athlete.id) || athlete.current_sync_step !== 'idle'}
                       className="button button-sync"
-                      title={athlete.current_sync_step !== 'idle' ? 'Sync in progress' : 'Trigger manual sync for this athlete'}
+                      title={athlete.current_sync_step !== 'idle' ? 'Sync in progress' : 'Sync now'}
+                      style={{ padding: '0.4rem 0.6rem', fontSize: '0.9rem' }}
                     >
-                      <i className="fa-solid fa-rotate"></i> Sync Now
+                      <i className="fa-solid fa-rotate"></i>
                     </button>
                     <button
                       onClick={() =>
@@ -1352,6 +1361,7 @@ export default function Admin() {
                       }
                       className="button button-delete"
                       title="Delete athlete and all data"
+                      style={{ padding: '0.4rem 0.6rem', fontSize: '0.9rem' }}
                     >
                       <i className="fa-solid fa-trash"></i>
                     </button>
