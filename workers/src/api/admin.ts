@@ -91,18 +91,15 @@ export async function getAdminAthletes(request: Request, env: Env): Promise<Resp
     const secondsPerAthlete = (SYNC_INTERVAL_DAYS * 24 * 60 * 60) / Math.max(totalAthletes, 1);
 
     const athletesWithProgress = [];
+    const nowSeconds = Math.floor(Date.now() / 1000);
+
     for (let i = 0; i < result.results.length; i++) {
       const athlete: any = result.results[i];
       const athleteData: any = { ...athlete };
 
       // Calculate next scheduled sync time
-      if (athlete.last_synced_at) {
-        athleteData.next_sync_at = athlete.last_synced_at + (SYNC_INTERVAL_DAYS * 24 * 60 * 60);
-      } else {
-        // Never synced - should be picked up soon
-        const nowSeconds = Math.floor(Date.now() / 1000);
-        athleteData.next_sync_at = nowSeconds + (i * secondsPerAthlete);
-      }
+      // Stagger athletes evenly across 7-day rotation period
+      athleteData.next_sync_at = nowSeconds + (i * secondsPerAthlete);
 
       // Get latest sync progress if currently syncing (only if new schema exists)
       if (athlete.current_sync_step && !['idle', 'completed', 'error'].includes(athlete.current_sync_step)) {

@@ -94,16 +94,22 @@ interface EditableSubmission extends ManualSubmission {
 }
 
 interface SyncQueueJob {
-  id: number;
+  id: number | string;
   athlete_id: number;
   job_type: string;
   status: string;
-  created_at: number;
+  created_at?: number;
   started_at: number | null;
   completed_at: number | null;
   error_message: string | null;
-  activities_synced: number;
-  total_activities_expected: number | null;
+  // New sync system fields
+  total_activities_fetched: number;
+  runs_filtered: number;
+  races_filtered: number;
+  new_races_added: number;
+  // Legacy fields (kept for backwards compatibility)
+  activities_synced?: number;
+  total_activities_expected?: number | null;
   strava_id: number;
   first_name: string;
   last_name: string;
@@ -407,7 +413,7 @@ export default function Admin() {
     }
   };
 
-  const stopSyncJob = async (syncId: number) => {
+  const stopSyncJob = async (syncId: number | string) => {
     try {
       const response = await fetch(`/api/admin/sync/stop?admin_strava_id=${currentAthleteId}`, {
         method: 'POST',
@@ -3033,9 +3039,11 @@ export default function Admin() {
                               </td>
                               <td className="number-cell">{durationText}</td>
                               <td className="number-cell">
-                                {job.total_activities_expected
-                                  ? `${job.activities_synced} / ${job.total_activities_expected}`
-                                  : `${job.activities_synced} activities`}
+                                {job.total_activities_fetched > 0 && `${job.total_activities_fetched} activities`}
+                                {job.runs_filtered > 0 && ` · ${job.runs_filtered} runs`}
+                                {job.races_filtered > 0 && ` · ${job.races_filtered} races`}
+                                {job.new_races_added > 0 && ` · ${job.new_races_added} new`}
+                                {job.total_activities_fetched === 0 && '-'}
                               </td>
                               <td>
                                 {job.error_message && (
@@ -3128,8 +3136,8 @@ export default function Admin() {
                                   : '-'}
                               </td>
                               <td className="number-cell">{durationText}</td>
-                              <td className="number-cell">{job.activities_synced || 0}</td>
-                              <td className="number-cell">-</td>
+                              <td className="number-cell">{job.total_activities_fetched || 0}</td>
+                              <td className="number-cell">{job.new_races_added || 0}</td>
                               <td>
                                 {job.error_message && (
                                   <span style={{ color: '#dc2626', fontSize: '0.85rem' }}>
