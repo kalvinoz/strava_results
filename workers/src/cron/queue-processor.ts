@@ -8,7 +8,7 @@ interface SyncQueueJob {
   athlete_id: number;
   strava_id: number;
   sync_session_id: string;
-  sync_type: 'manual' | 'auto' | 'chunked_detail_fetch';
+  sync_type: 'manual' | 'auto' | 'chunked_detail_fetch' | 'chunked_time_fetch';
   after_date: string | null;
   before_date: string | null;
   status: 'pending' | 'processing' | 'completed' | 'failed';
@@ -21,7 +21,7 @@ interface SyncQueueJob {
   // Chunking fields
   chunk_index: number | null;
   total_chunks: number | null;
-  race_ids: string | null; // JSON array of race IDs
+  race_ids: string | null; // JSON array of race IDs for chunked_detail_fetch
   parent_session_id: string | null;
 }
 
@@ -78,11 +78,13 @@ export async function processQueuedSyncs(env: Env): Promise<void> {
 
       console.log(`[QueueProcessor] Starting sync for athlete ${athlete.strava_id} (${athlete.firstname} ${athlete.lastname})`);
 
-      // Check if this is a chunked detail fetch job
+      // Check job type and process accordingly
       if (job.sync_type === 'chunked_detail_fetch') {
         await processChunkedDetailFetch(env, job, athlete);
+      } else if (job.sync_type === 'chunked_time_fetch') {
+        await processChunkedTimeFetch(env, job, athlete);
       } else {
-        // Normal sync job
+        // Normal sync job (manual or auto)
         const { syncAthlete } = await import('../sync/rotation-sync');
 
         await syncAthlete(env, athlete, job.sync_type as 'manual' | 'auto', {
@@ -166,17 +168,81 @@ async function markJobFailed(
   console.log(`[QueueProcessor] Job ${jobId} marked as failed: ${errorMessage}`);
 }
 
+/**
+ * Process a time-based chunk job (fetch activities for a specific time range)
+ */
+async function processChunkedTimeFetch(
+  env: Env,
+  job: SyncQueueJob,
+  athlete: any
+): Promise<void> {
+  const chunkNum = (job.chunk_index || 0) + 1;
+  console.log(`[TimeChunkProcessor] Processing time chunk ${chunkNum}/${job.total_chunks} for sync ${job.parent_session_id}`);
+  console.log(`[TimeChunkProcessor] Date range: ${job.after_date} to ${job.before_date}`);
+
+  // Import sync functions
+  const { syncAthlete } = await import('../sync/rotation-sync');
+
+  // Process this time chunk as a normal sync with date filters
+  // This will fetch activities, filter to races, and save them
+  await syncAthlete(env, athlete, 'manual', {
+    sessionId: job.sync_session_id,
+    afterDate: job.after_date || undefined,
+    beforeDate: job.before_date || undefined,
+  });
+
+  // Check if all time chunks are complete
+  const remainingChunks = await env.DB.prepare(
+    `SELECT COUNT(*) as count FROM sync_queue
+     WHERE parent_session_id = ? AND sync_type = 'chunked_time_fetch' AND status IN ('pending', 'processing')`
+  ).bind(job.parent_session_id).first<{ count: number }>();
+
+  const remaining = remainingChunks?.count || 0;
+  console.log(`[TimeChunkProcessor] Time chunk ${chunkNum}/${job.total_chunks} complete. ${remaining} chunks remaining.`);
+
+  if (remaining === 0) {
+    // All time chunks processed - finalize parent sync
+    const raceCountResult = await env.DB.prepare(
+      'SELECT COUNT(*) as count FROM races WHERE athlete_id = ?'
+    ).bind(athlete.id).first<{ count: number }>();
+    const totalRaceCount = raceCountResult?.count || 0;
+    const completedAt = Math.floor(Date.now() / 1000);
+
+    // Get total activities count from all completed time chunks
+    const activityCountResult = await env.DB.prepare(
+      `SELECT SUM(total_activities_fetched) as total FROM sync_progress
+       WHERE sync_session_id LIKE ? AND status = 'completed'`
+    ).bind(`${job.parent_session_id}-time-%`).first<{ total: number }>();
+    const totalActivities = activityCountResult?.total || 0;
+
+    await env.DB.prepare(
+      `UPDATE sync_progress SET status = 'completed', current_step = 'completed', completed_at = ?, total_activities_fetched = ?
+       WHERE sync_session_id = ?`
+    ).bind(completedAt, totalActivities, job.parent_session_id).run();
+
+    await env.DB.prepare(
+      `UPDATE athletes SET current_sync_step = 'completed', last_synced_at = ?, race_count = ?, total_activities_count = ?, updated_at = ?
+       WHERE id = ?`
+    ).bind(completedAt, totalRaceCount, totalActivities, completedAt, athlete.id).run();
+
+    console.log(`[TimeChunkProcessor] Sync ${job.parent_session_id} finalized. Total activities: ${totalActivities}, Total races: ${totalRaceCount}`);
+  }
+}
+
+/**
+ * Process a race detail chunk job (fetch details for a batch of races)
+ */
 async function processChunkedDetailFetch(
   env: Env,
   job: SyncQueueJob,
   athlete: any
 ): Promise<void> {
   const chunkNum = (job.chunk_index || 0) + 1;
-  console.log(`[ChunkProcessor] Processing chunk ${chunkNum}/${job.total_chunks} for sync ${job.parent_session_id}`);
+  console.log(`[DetailChunkProcessor] Processing detail chunk ${chunkNum}/${job.total_chunks} for sync ${job.parent_session_id}`);
 
   const raceIds: number[] = JSON.parse(job.race_ids || '[]');
   if (raceIds.length === 0) {
-    console.warn(`[ChunkProcessor] Chunk ${job.id} has no race IDs`);
+    console.warn(`[DetailChunkProcessor] Chunk ${job.id} has no race IDs`);
     return;
   }
 
@@ -193,7 +259,7 @@ async function processChunkedDetailFetch(
         detailedActivities.set(raceId, await response.json());
       }
     } catch (error) {
-      console.error(`[ChunkProcessor] Error fetching race ${raceId}:`, error);
+      console.error(`[DetailChunkProcessor] Error fetching race ${raceId}:`, error);
     }
   }
 
@@ -202,17 +268,17 @@ async function processChunkedDetailFetch(
     try {
       await saveRaceFromDetailed(env, athlete.id, detailed);
     } catch (error) {
-      console.error(`[ChunkProcessor] Error saving race ${raceId}:`, error);
+      console.error(`[DetailChunkProcessor] Error saving race ${raceId}:`, error);
     }
   }
 
   const remainingChunks = await env.DB.prepare(
     `SELECT COUNT(*) as count FROM sync_queue
-     WHERE parent_session_id = ? AND status IN ('pending', 'processing')`
+     WHERE parent_session_id = ? AND sync_type = 'chunked_detail_fetch' AND status IN ('pending', 'processing')`
   ).bind(job.parent_session_id).first<{ count: number }>();
 
   const remaining = remainingChunks?.count || 0;
-  console.log(`[ChunkProcessor] Chunk ${chunkNum}/${job.total_chunks} complete. ${remaining} chunks remaining.`);
+  console.log(`[DetailChunkProcessor] Detail chunk ${chunkNum}/${job.total_chunks} complete. ${remaining} chunks remaining.`);
 
   if (remaining === 0) {
     const raceCountResult = await env.DB.prepare(
@@ -231,6 +297,6 @@ async function processChunkedDetailFetch(
        WHERE id = ?`
     ).bind(completedAt, totalRaceCount, completedAt, athlete.id).run();
 
-    console.log(`[ChunkProcessor] Sync ${job.parent_session_id} finalized. Total races: ${totalRaceCount}`);
+    console.log(`[DetailChunkProcessor] Sync ${job.parent_session_id} finalized. Total races: ${totalRaceCount}`);
   }
 }

@@ -535,7 +535,98 @@ export async function syncAthlete(
     const afterTimestamp = options?.afterDate ? Math.floor(new Date(options.afterDate).getTime() / 1000) : undefined;
     const beforeTimestamp = options?.beforeDate ? Math.floor(new Date(options.beforeDate).getTime() / 1000) : undefined;
 
-    // Phase 1: Fetch all activities
+    // Phase 0: Check if we need to chunk by time (too many total activities)
+    // Subrequest limit: 50 total
+    // Problem: Activity pages + race detail fetches happen in same Worker invocation
+    // Worst case: If we fetch P pages, we might find P * 200 * 10% = 20P new races (assuming 10% are races)
+    // Total subrequests = P (pages) + min(20P, 45) (race details, capped by detail chunking)
+    // Before detail chunking kicks in: P + 20P = 21P < 50 → P < 2.4
+    // So max ~2 pages (400 activities) before we MUST use time chunking
+    // This is very conservative but necessary to avoid subrequest limit
+    const ACTIVITIES_PER_PAGE = 200;
+    const MAX_SAFE_ACTIVITY_PAGES = 2; // Conservative: 2 pages + up to 40 races = ~42 subrequests
+    const MAX_SAFE_ACTIVITIES = ACTIVITIES_PER_PAGE * MAX_SAFE_ACTIVITY_PAGES; // 400
+
+    if (athlete.total_activities_count && athlete.total_activities_count > MAX_SAFE_ACTIVITIES && !afterTimestamp) {
+      // Too many activities - need to chunk by time
+      await logSyncStep(
+        env,
+        sessionId,
+        athlete.id,
+        'fetching_activities',
+        'info',
+        `Large athlete detected: ${athlete.total_activities_count} total activities. Chunking by time to avoid subrequest limits.`
+      );
+
+      // Split into 1-year chunks, working backwards from now
+      const nowTimestamp = beforeTimestamp || Math.floor(Date.now() / 1000);
+      const oneYearSeconds = 365 * 24 * 60 * 60;
+      const chunks: Array<{ after: number; before: number }> = [];
+
+      // Determine how far back we need to go
+      // Assume athlete joined in 2010 or use afterTimestamp if provided
+      const startTimestamp = afterTimestamp || new Date('2010-01-01').getTime() / 1000;
+
+      let currentBefore = nowTimestamp;
+      while (currentBefore > startTimestamp) {
+        const currentAfter = Math.max(startTimestamp, currentBefore - oneYearSeconds);
+        chunks.push({ after: currentAfter, before: currentBefore });
+        currentBefore = currentAfter;
+      }
+
+      await logSyncStep(
+        env,
+        sessionId,
+        athlete.id,
+        'fetching_activities',
+        'info',
+        `Creating ${chunks.length} time-based chunks (1 year each) to process activities`
+      );
+
+      // Create time-chunked jobs in the queue
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        const afterDate = new Date(chunk.after * 1000).toISOString().split('T')[0];
+        const beforeDate = new Date(chunk.before * 1000).toISOString().split('T')[0];
+
+        await env.DB.prepare(
+          `INSERT INTO sync_queue (
+            athlete_id, strava_id, sync_session_id, sync_type,
+            status, chunk_index, total_chunks, after_date, before_date, parent_session_id
+          ) VALUES (?, ?, ?, 'chunked_time_fetch', 'pending', ?, ?, ?, ?, ?)`
+        )
+          .bind(
+            athlete.id,
+            athlete.strava_id,
+            `${sessionId}-time-${i}`,
+            i,
+            chunks.length,
+            afterDate,
+            beforeDate,
+            sessionId
+          )
+          .run();
+      }
+
+      await logSyncStep(
+        env,
+        sessionId,
+        athlete.id,
+        'fetching_activities',
+        'success',
+        `Created ${chunks.length} time-chunk jobs for processing activities`
+      );
+
+      // Mark sync as pending chunks
+      await updateSyncProgress(env, sessionId, {
+        currentStep: 'fetching_activities',
+      });
+
+      console.log(`[RotationSync] Time-chunked sync for athlete ${athlete.strava_id}: ${chunks.length} chunks queued`);
+      return; // Exit - chunks will be processed by queue processor
+    }
+
+    // Phase 1: Fetch all activities (normal path - reasonable number of activities)
     const { activities, rateLimits } = await fetchAllActivities(env, athlete, sessionId, afterTimestamp, beforeTimestamp);
 
     // Phase 2: Filter to runs and races

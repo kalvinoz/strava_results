@@ -101,6 +101,22 @@ export async function getAdminAthletes(request: Request, env: Env): Promise<Resp
       // Stagger athletes evenly across 7-day rotation period
       athleteData.next_sync_at = nowSeconds + (i * secondsPerAthlete);
 
+      // Check if there's a pending/processing sync in the queue
+      try {
+        const queueJob = await env.DB.prepare(
+          `SELECT id, status FROM sync_queue
+           WHERE athlete_id = ? AND status IN ('pending', 'processing')
+           LIMIT 1`
+        )
+          .bind(athlete.id)
+          .first<any>();
+
+        athleteData.has_queued_sync = !!queueJob;
+      } catch (error) {
+        // sync_queue table doesn't exist yet
+        athleteData.has_queued_sync = false;
+      }
+
       // Get latest sync progress if currently syncing (only if new schema exists)
       if (athlete.current_sync_step && !['idle', 'completed', 'error'].includes(athlete.current_sync_step)) {
         try {

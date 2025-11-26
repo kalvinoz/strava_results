@@ -24,6 +24,7 @@ interface AdminAthlete {
   current_sync_step?: string;
   last_sync_type?: 'auto' | 'manual';
   next_sync_at?: number;
+  has_queued_sync?: boolean;
   syncProgress?: {
     total_activities_fetched: number;
     runs_filtered: number;
@@ -1351,9 +1352,9 @@ export default function Admin() {
                   <div className="action-buttons" style={{ gap: '0.25rem', justifyContent: 'center' }}>
                     <button
                       onClick={() => triggerSync(athlete.strava_id)}
-                      disabled={syncing.has(athlete.strava_id) || athlete.current_sync_step !== 'idle'}
+                      disabled={syncing.has(athlete.strava_id) || athlete.has_queued_sync}
                       className="button button-sync"
-                      title={athlete.current_sync_step !== 'idle' ? 'Sync in progress' : 'Sync now'}
+                      title={athlete.has_queued_sync ? 'Sync queued/in progress' : 'Sync now'}
                       style={{ padding: '0.4rem 0.6rem', fontSize: '0.9rem' }}
                     >
                       <i className="fa-solid fa-rotate"></i>
