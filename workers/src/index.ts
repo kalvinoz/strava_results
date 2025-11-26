@@ -680,7 +680,11 @@ export default {
         await processNextQueuedJob(env, ctx);
 
       } else if (event.cron === '* * * * *') {
-        // WOOD-8: Batch processor: Process pending batches + health check
+        // Every minute: Process sync queue + batches + health check
+        console.log('[QueueProcessor] Processing sync queue...');
+        const { processQueuedSyncs } = await import('./cron/queue-processor');
+        await processQueuedSyncs(env);
+
         console.log('[WOOD-8] Batch processor cron: Processing pending batches...');
         await processPendingBatches(env, ctx);
 

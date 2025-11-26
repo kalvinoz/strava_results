@@ -338,7 +338,7 @@ export async function triggerAthleteSync(
       );
     }
 
-    // Create sync_progress record first
+    // Create sync_progress record first (for dashboard visibility)
     const sessionId = crypto.randomUUID();
     const startedAt = Math.floor(Date.now() / 1000);
 
@@ -358,33 +358,29 @@ export async function triggerAthleteSync(
 
     console.log(`[Admin] Created sync session ${sessionId} for athlete ${athlete.strava_id}`);
 
-    // Trigger sync by making internal fetch call (fire-and-forget)
-    // This ensures the sync actually starts in a separate Worker invocation
-    const syncUrl = new URL(request.url);
-    syncUrl.pathname = `/internal/sync/${athlete.strava_id}`;
-    syncUrl.search = '';
+    // Add job to sync_queue (reliable database-backed queue)
+    // This job will be processed by the queue processor cron job
+    await env.DB.prepare(
+      `INSERT INTO sync_queue (
+        athlete_id, strava_id, sync_session_id, sync_type,
+        after_date, before_date, status, attempts, max_attempts
+      ) VALUES (?, ?, ?, 'manual', ?, ?, 'pending', 0, 3)`
+    )
+      .bind(
+        athlete.id,
+        athlete.strava_id,
+        sessionId,
+        body.after_date || null,
+        body.before_date || null
+      )
+      .run();
 
-    ctx.waitUntil(
-      fetch(syncUrl.toString(), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Internal-Request': 'true',
-        },
-        body: JSON.stringify({
-          session_id: sessionId,
-          after_date: body.after_date,
-          before_date: body.before_date,
-        }),
-      }).catch((error) => {
-        console.error(`[Admin] Failed to trigger internal sync:`, error);
-      })
-    );
+    console.log(`[Admin] Enqueued sync job for athlete ${athlete.strava_id} (session: ${sessionId})`);
 
     return new Response(
       JSON.stringify({
         success: true,
-        message: 'Manual sync queued. Check the Sync Dashboard tab for progress.',
+        message: 'Manual sync queued and will start within 1 minute. Check the Sync Dashboard tab for progress.',
         session_id: sessionId,
       }),
       {
@@ -762,37 +758,38 @@ export async function getAdminSyncStatus(request: Request, env: Env): Promise<Re
     }
 
     // Get current sync progress (new system)
+    // Only show syncs that are truly running (status='running' in sync_progress)
     const activeSyncs = await env.DB.prepare(`
       SELECT
-        a.id as athlete_id,
-        a.strava_id,
-        a.firstname,
-        a.lastname,
-        a.current_sync_step,
         sp.sync_session_id,
+        sp.athlete_id,
         sp.sync_type,
+        sp.current_step,
+        sp.status,
         sp.total_activities_fetched,
         sp.runs_filtered,
         sp.races_filtered,
         sp.new_races_added,
         sp.started_at,
         sp.completed_at,
-        sp.status,
-        sp.error_message
-      FROM athletes a
-      LEFT JOIN sync_progress sp ON a.id = sp.athlete_id
-      WHERE a.current_sync_step NOT IN ('idle', 'completed', 'error')
-        OR sp.status = 'running'
+        sp.error_message,
+        a.strava_id,
+        a.firstname,
+        a.lastname,
+        a.current_sync_step
+      FROM sync_progress sp
+      JOIN athletes a ON sp.athlete_id = a.id
+      WHERE sp.status = 'running'
       ORDER BY sp.started_at DESC
     `).all();
 
     const active = (activeSyncs.results || []).map((sync: any) => ({
-      id: sync.sync_session_id || `athlete-${sync.athlete_id}`,
+      id: sync.sync_session_id,
       athlete_id: sync.athlete_id,
       strava_id: sync.strava_id,
       first_name: sync.firstname,
       last_name: sync.lastname,
-      current_step: sync.current_sync_step,
+      current_step: sync.current_step,
       sync_type: sync.sync_type,
       job_type: `${sync.sync_type}_sync`,
       status: sync.status,
@@ -830,6 +827,7 @@ export async function getAdminSyncStatus(request: Request, env: Env): Promise<Re
       started_at: sync.started_at ? sync.started_at * 1000 : null,
       completed_at: sync.completed_at ? sync.completed_at * 1000 : null,
       total_activities_fetched: sync.total_activities_fetched || 0,
+      races_filtered: sync.races_filtered || 0,
       new_races_added: sync.new_races_added || 0,
       error_message: sync.error_message,
     }));
@@ -894,15 +892,14 @@ export async function stopSyncJob(request: Request, env: Env): Promise<Response>
       );
     }
 
-    // Stop sync by updating athlete's sync step to error
-    const result = await env.DB.prepare(
-      `UPDATE athletes SET current_sync_step = 'error', sync_status = 'error', sync_error = 'Stopped by admin'
-       WHERE id = (SELECT athlete_id FROM sync_progress WHERE sync_session_id = ? AND status = 'running')`
+    // First, check if sync exists and is running
+    const sync = await env.DB.prepare(
+      `SELECT athlete_id, current_step FROM sync_progress WHERE sync_session_id = ? AND status = 'running'`
     )
       .bind(body.sync_id)
-      .run();
+      .first<{ athlete_id: number; current_step: string }>();
 
-    if (!result.success) {
+    if (!sync) {
       return new Response(
         JSON.stringify({ error: 'Sync not found or already completed' }),
         {
@@ -914,6 +911,27 @@ export async function stopSyncJob(request: Request, env: Env): Promise<Response>
         }
       );
     }
+
+    // Update sync_progress table to mark as stopped
+    await env.DB.prepare(
+      `UPDATE sync_progress
+       SET status = 'error',
+           error_message = 'Stopped by admin',
+           error_step = ?,
+           completed_at = strftime('%s', 'now')
+       WHERE sync_session_id = ?`
+    )
+      .bind(sync.current_step, body.sync_id)
+      .run();
+
+    // Update athlete's current_sync_step to idle
+    await env.DB.prepare(
+      `UPDATE athletes SET current_sync_step = 'idle' WHERE id = ?`
+    )
+      .bind(sync.athlete_id)
+      .run();
+
+    console.log(`[Admin] Stopped sync ${body.sync_id} for athlete ${sync.athlete_id}`);
 
     return new Response(
       JSON.stringify({ message: 'Sync stopped successfully', sync_id: body.sync_id }),

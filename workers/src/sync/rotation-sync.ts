@@ -544,7 +544,66 @@ export async function syncAthlete(
     // Phase 3: Check which races are new
     const { newRaces, existingRaceIds } = await checkExistingRaces(env, athlete, sessionId, races);
 
-    // Phase 4: Fetch detailed data for new races
+    // Phase 4: Check if we need to chunk this sync (too many new races)
+    const MAX_RACES_PER_CHUNK = 40; // Safe limit under Workers 50 subrequest limit
+    const CHUNK_THRESHOLD = 45;
+
+    if (newRaces.length > CHUNK_THRESHOLD) {
+      // Too many races - split into chunks to avoid subrequest limit
+      await logSyncStep(
+        env,
+        sessionId,
+        athlete.id,
+        'fetching_details',
+        'info',
+        `Large sync detected: ${newRaces.length} new races. Splitting into chunks to avoid subrequest limits.`
+      );
+
+      const totalChunks = Math.ceil(newRaces.length / MAX_RACES_PER_CHUNK);
+
+      // Create chunk jobs in the queue
+      for (let i = 0; i < newRaces.length; i += MAX_RACES_PER_CHUNK) {
+        const chunk = newRaces.slice(i, i + MAX_RACES_PER_CHUNK);
+        const chunkIndex = Math.floor(i / MAX_RACES_PER_CHUNK);
+
+        await env.DB.prepare(
+          `INSERT INTO sync_queue (
+            athlete_id, strava_id, sync_session_id, sync_type,
+            status, chunk_index, total_chunks, race_ids, parent_session_id
+          ) VALUES (?, ?, ?, 'chunked_detail_fetch', 'pending', ?, ?, ?, ?)`
+        )
+          .bind(
+            athlete.id,
+            athlete.strava_id,
+            `${sessionId}-chunk-${chunkIndex}`,
+            chunkIndex,
+            totalChunks,
+            JSON.stringify(chunk.map(r => r.id)),
+            sessionId
+          )
+          .run();
+      }
+
+      await logSyncStep(
+        env,
+        sessionId,
+        athlete.id,
+        'fetching_details',
+        'success',
+        `Created ${totalChunks} chunk jobs for processing ${newRaces.length} races`
+      );
+
+      // Mark sync as pending chunks (not fully complete yet)
+      await updateSyncProgress(env, sessionId, {
+        currentStep: 'fetching_details',
+        racesFiltered: races.length,
+      });
+
+      console.log(`[RotationSync] Chunked sync for athlete ${athlete.strava_id}: ${totalChunks} chunks queued`);
+      return; // Exit - chunks will be processed by queue processor
+    }
+
+    // Phase 4: Fetch detailed data for new races (normal path - small number of races)
     const detailedActivities = await fetchRaceDetails(env, athlete, sessionId, newRaces);
 
     // Phase 5: Save new races
@@ -559,11 +618,27 @@ export async function syncAthlete(
       completedAt,
     });
 
-    // Update athlete's last_synced_at and last_sync_type
-    await env.DB.prepare(
-      `UPDATE athletes SET last_synced_at = ?, last_sync_type = ?, sync_status = 'completed', sync_error = NULL, updated_at = ? WHERE id = ?`
+    // Get total race count for this athlete from database
+    const raceCountResult = await env.DB.prepare(
+      'SELECT COUNT(*) as count FROM races WHERE athlete_id = ?'
     )
-      .bind(completedAt, syncType, completedAt, athlete.id)
+      .bind(athlete.id)
+      .first<{ count: number }>();
+    const totalRaceCount = raceCountResult?.count || 0;
+
+    // Update athlete's last_synced_at, last_sync_type, and counts
+    await env.DB.prepare(
+      `UPDATE athletes
+       SET last_synced_at = ?,
+           last_sync_type = ?,
+           sync_status = 'completed',
+           sync_error = NULL,
+           updated_at = ?,
+           total_activities_count = ?,
+           race_count = ?
+       WHERE id = ?`
+    )
+      .bind(completedAt, syncType, completedAt, activities.length, totalRaceCount, athlete.id)
       .run();
 
     await logSyncStep(

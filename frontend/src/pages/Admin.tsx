@@ -3137,7 +3137,9 @@ export default function Admin() {
                               </td>
                               <td className="number-cell">{durationText}</td>
                               <td className="number-cell">{job.total_activities_fetched || 0}</td>
-                              <td className="number-cell">{job.new_races_added || 0}</td>
+                              <td className="number-cell" title={`${job.new_races_added || 0} new`}>
+                                {job.races_filtered || job.new_races_added || 0}
+                              </td>
                               <td>
                                 {job.error_message && (
                                   <span style={{ color: '#dc2626', fontSize: '0.85rem' }}>
