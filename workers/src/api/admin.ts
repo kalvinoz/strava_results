@@ -1,6 +1,5 @@
 // Admin API endpoints
 import { Env } from '../types';
-import { syncAthlete as syncAthleteNew } from '../sync/rotation-sync';
 
 /**
  * Check if a user is an admin
@@ -451,43 +450,60 @@ export async function triggerSyncAll(
     }
 
     const totalAthletes = athletes.results.length;
+    let queuedCount = 0;
+    let skippedCount = 0;
 
-    // Trigger sync for all athletes in background
-    ctx.waitUntil(
-      (async () => {
-        console.log(`[Admin] Sync All: Starting sync for ${totalAthletes} athletes`);
+    // Queue all athletes for sync using the reliable queue system
+    console.log(`[Admin] Sync All: Queuing ${totalAthletes} athletes for sync`);
 
-        for (const athlete of athletes.results) {
-          try {
-            // Check if already syncing
-            if (athlete.current_sync_step && !['idle', 'completed', 'error'].includes(athlete.current_sync_step)) {
-              console.log(`[Admin] Skipping athlete ${athlete.strava_id} - already syncing`);
-              continue;
-            }
+    for (const athlete of athletes.results) {
+      try {
+        // Check if already syncing (has an active queue entry)
+        const existingJob = await env.DB.prepare(
+          `SELECT id FROM sync_queue
+           WHERE athlete_id = ? AND status IN ('pending', 'processing')
+           LIMIT 1`
+        ).bind(athlete.id).first();
 
-            await syncAthleteNew(env, athlete, 'manual', {
-              afterDate: body.after_date,
-              beforeDate: body.before_date,
-            });
-
-            console.log(`[Admin] Sync All: Completed athlete ${athlete.strava_id}`);
-
-            // Small delay to avoid overwhelming the system
-            await new Promise(resolve => setTimeout(resolve, 1000));
-          } catch (error) {
-            console.error(`[Admin] Sync All: Failed for athlete ${athlete.strava_id}:`, error);
-            // Continue with next athlete
-          }
+        if (existingJob) {
+          console.log(`[Admin] Skipping athlete ${athlete.strava_id} - already in queue`);
+          skippedCount++;
+          continue;
         }
 
-        console.log(`[Admin] Sync All: Completed for all ${totalAthletes} athletes`);
-      })()
-    );
+        // Create sync queue entry
+        const sessionId = crypto.randomUUID();
+
+        await env.DB.prepare(
+          `INSERT INTO sync_queue (
+            athlete_id, strava_id, sync_session_id, sync_type,
+            after_date, before_date, status, created_at
+          ) VALUES (?, ?, ?, 'manual', ?, ?, 'pending', strftime('%s', 'now'))`
+        ).bind(
+          athlete.id,
+          athlete.strava_id,
+          sessionId,
+          body.after_date || null,
+          body.before_date || null
+        ).run();
+
+        queuedCount++;
+        console.log(`[Admin] Queued athlete ${athlete.strava_id} (session: ${sessionId})`);
+
+      } catch (error) {
+        console.error(`[Admin] Failed to queue athlete ${athlete.strava_id}:`, error);
+      }
+    }
+
+    console.log(`[Admin] Sync All: Queued ${queuedCount} athletes, skipped ${skippedCount} already in queue`);
 
     return new Response(
       JSON.stringify({
         success: true,
-        message: `Sync triggered for ${totalAthletes} athletes`,
+        message: `Queued ${queuedCount} athletes for sync${skippedCount > 0 ? ` (${skippedCount} already queued)` : ''}`,
+        queued: queuedCount,
+        skipped: skippedCount,
+        total: totalAthletes,
         date_range: body.after_date || body.before_date
           ? { after: body.after_date || 'all', before: body.before_date || 'now' }
           : null,

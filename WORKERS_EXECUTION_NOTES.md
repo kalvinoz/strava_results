@@ -583,3 +583,63 @@ Dashboard showed 6 syncs stuck in "running" status for 20+ hours, but:
 - Health monitor now runs every minute
 - Orphaned sync cleanup is automatic
 - Old queue system fully removed
+
+## ❌ Problem: "Sync All Athletes" Only Syncing One Athlete (2025-11-27)
+
+### Issue Discovered (2025-11-27)
+When clicking "Sync All Athletes" button in admin dashboard, only one athlete (Pedro) was being synced instead of all athletes.
+
+**Root Cause:**
+- `triggerSyncAll()` function in `admin.ts` was using the OLD unreliable pattern:
+  - Used `ctx.waitUntil()` with direct `syncAthlete()` calls
+  - This is the exact pattern documented as unreliable in the notes above
+  - Worker terminates before background tasks complete
+  - Only the first athlete gets synced, rest are lost
+
+### ✅ Solution: Use Queue System for Sync All (2025-11-27)
+
+**Fix Applied:**
+- Rewrote `triggerSyncAll()` to use the reliable queue system
+- Instead of `ctx.waitUntil()`, now creates `sync_queue` entries for each athlete
+- Checks for existing queue entries to avoid duplicates
+- Returns immediately with queue status
+
+**Before (Unreliable):**
+```typescript
+ctx.waitUntil(
+  (async () => {
+    for (const athlete of athletes.results) {
+      await syncAthleteNew(env, athlete, 'manual', {...}); // Lost when worker terminates
+    }
+  })()
+);
+```
+
+**After (Reliable):**
+```typescript
+for (const athlete of athletes.results) {
+  // Check if already queued
+  const existingJob = await env.DB.prepare(
+    `SELECT id FROM sync_queue WHERE athlete_id = ? AND status IN ('pending', 'processing')`
+  ).bind(athlete.id).first();
+
+  if (existingJob) continue;
+
+  // Queue for sync
+  await env.DB.prepare(
+    `INSERT INTO sync_queue (...) VALUES (...)`
+  ).bind(...).run();
+}
+```
+
+### Benefits
+✅ **Guaranteed execution**: All athletes queued to database before response returns
+✅ **No data loss**: Queue persists even if worker terminates
+✅ **Automatic processing**: Every-minute cron processes queue entries
+✅ **No duplicates**: Checks for existing queue entries before adding
+✅ **Progress tracking**: Each athlete gets a unique session ID
+
+### Deployed (2025-11-27)
+- Worker Version: `cb87a912-85ab-4ab9-9d58-aad0bbf2a06d`
+- "Sync All Athletes" now queues all athletes reliably
+- Removed unreliable `syncAthleteNew` import from admin.ts
