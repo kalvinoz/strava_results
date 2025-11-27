@@ -517,8 +517,13 @@ export async function syncAthlete(
   console.log(`[RotationSync] Starting ${syncType} sync for athlete ${athlete.strava_id}${dateRangeMsg} (session: ${sessionId})`);
 
   try {
-    // Create sync progress record (only if not already created)
-    if (!options?.sessionId) {
+    // Create sync progress record if it doesn't exist yet
+    // Check if sync_progress already exists for this session
+    const existingProgress = await env.DB.prepare(
+      `SELECT id FROM sync_progress WHERE sync_session_id = ? LIMIT 1`
+    ).bind(sessionId).first();
+
+    if (!existingProgress) {
       await env.DB.prepare(
         `INSERT INTO sync_progress (
           athlete_id, sync_session_id, current_step, status, sync_type, started_at
@@ -526,6 +531,9 @@ export async function syncAthlete(
       )
         .bind(athlete.id, sessionId, 'queued', 'running', syncType, startedAt)
         .run();
+      console.log(`[RotationSync] Created sync_progress record for session ${sessionId}`);
+    } else {
+      console.log(`[RotationSync] Using existing sync_progress record for session ${sessionId}`);
     }
 
     await updateSyncStep(env, athlete.id, 'queued');

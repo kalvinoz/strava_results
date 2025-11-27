@@ -643,3 +643,64 @@ for (const athlete of athletes.results) {
 - Worker Version: `cb87a912-85ab-4ab9-9d58-aad0bbf2a06d`
 - "Sync All Athletes" now queues all athletes reliably
 - Removed unreliable `syncAthleteNew` import from admin.ts
+
+## ❌ Problem: Missing sync_progress Records for Queued Syncs (2025-11-27)
+
+### Issue Discovered (2025-11-27)
+Sync session `104f390b-e263-4f9c-8ca6-630355895282` was stuck in "queued" status with no progress because:
+- sync_progress record existed (status='running', step='queued')
+- NO sync_queue entry existed (orphaned record)
+- Created from "Sync All Athletes" action
+
+**Root Cause:**
+Logic error in `syncAthlete()` function in `rotation-sync.ts`:
+```typescript
+// OLD BUGGY CODE:
+if (!options?.sessionId) {
+  // Only create sync_progress if sessionId was NOT provided
+  await env.DB.prepare(`INSERT INTO sync_progress ...`);
+}
+```
+
+This caused different behavior for different entry points:
+
+| Entry Point | Creates sync_progress? | Creates sync_queue? | Passes sessionId? | Result |
+|-------------|------------------------|---------------------|-------------------|---------|
+| `triggerAthleteSync` (single) | ✅ Yes (in admin.ts) | ✅ Yes | ✅ Yes | Works - sync_progress exists |
+| `triggerSyncAll` (bulk) | ❌ No | ✅ Yes | ✅ Yes | **BROKEN** - no sync_progress created |
+
+When `triggerSyncAll` queued athletes:
+1. Created sync_queue entry with sessionId
+2. Did NOT create sync_progress (relies on syncAthlete to do it)
+3. Queue processor called `syncAthlete(env, athlete, 'manual', {sessionId})`
+4. Because sessionId was provided, the `if (!options?.sessionId)` check FAILED
+5. No sync_progress record was ever created
+6. Dashboard showed nothing (no progress to display)
+
+### ✅ Solution: Always Create sync_progress if Missing (2025-11-27)
+
+**Fix Applied:**
+Changed `syncAthlete()` to always check if sync_progress exists, and create it if missing:
+
+```typescript
+// NEW FIXED CODE:
+const existingProgress = await env.DB.prepare(
+  `SELECT id FROM sync_progress WHERE sync_session_id = ? LIMIT 1`
+).bind(sessionId).first();
+
+if (!existingProgress) {
+  await env.DB.prepare(`INSERT INTO sync_progress ...`);
+  console.log(`[RotationSync] Created sync_progress record for session ${sessionId}`);
+}
+```
+
+### Benefits
+✅ **Works for all entry points**: Single sync, bulk sync, queue processor - all work
+✅ **No orphaned records**: sync_progress always created when sync starts
+✅ **Idempotent**: Safe to call multiple times (checks for existing record)
+✅ **Dashboard visibility**: All syncs show progress immediately
+
+### Deployed (2025-11-27)
+- Worker Version: `6c7f7df0-28a9-4d91-820d-bdf2bdfb849d`
+- sync_progress records now created reliably for all sync types
+- Manually cleaned up orphaned record from buggy version
