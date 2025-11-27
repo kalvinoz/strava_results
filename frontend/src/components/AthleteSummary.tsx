@@ -40,6 +40,7 @@ interface AthleteStat {
 export default function AthleteSummary({ races, selectedAthletes = [], onAthleteToggle }: AthleteSummaryProps) {
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(20);
+  const [isCollapsed, setIsCollapsed] = useState(false);
 
   // Filter out hidden races before calculating statistics
   const visibleRaces = races.filter(race => !race.is_hidden);
@@ -129,93 +130,102 @@ export default function AthleteSummary({ races, selectedAthletes = [], onAthlete
   return (
     <div className="athlete-summary">
       <div className="summary-header">
-        <h2 className="summary-title">Athlete Summary</h2>
-        <div className="summary-controls">
-          <span className="summary-count">
-            Showing {showAll ? totalAthletes : `${(currentPage - 1) * itemsPerPage + 1}-${Math.min(currentPage * itemsPerPage, totalAthletes)}`} of {totalAthletes} athlete{totalAthletes !== 1 ? 's' : ''}
-          </span>
-          <div className="per-page-selector">
-            <label htmlFor="itemsPerPage">Per page:</label>
-            <select
-              id="itemsPerPage"
-              value={itemsPerPage}
-              onChange={(e) => handleItemsPerPageChange(Number(e.target.value))}
-            >
-              <option value={10}>10</option>
-              <option value={20}>20</option>
-              <option value={50}>50</option>
-              <option value={100}>100</option>
-              <option value={-1}>All</option>
-            </select>
+        <h2 className="summary-title" onClick={() => setIsCollapsed(!isCollapsed)} style={{ cursor: 'pointer', userSelect: 'none' }}>
+          <span style={{ marginRight: '0.5rem' }}>{isCollapsed ? '▶' : '▼'}</span>
+          Runners
+        </h2>
+        {!isCollapsed && (
+          <div className="summary-controls">
+            <span className="summary-count">
+              Showing {showAll ? totalAthletes : `${(currentPage - 1) * itemsPerPage + 1}-${Math.min(currentPage * itemsPerPage, totalAthletes)}`} of {totalAthletes} athlete{totalAthletes !== 1 ? 's' : ''}
+            </span>
+            <div className="per-page-selector">
+              <label htmlFor="itemsPerPage">Per page:</label>
+              <select
+                id="itemsPerPage"
+                value={itemsPerPage}
+                onChange={(e) => handleItemsPerPageChange(Number(e.target.value))}
+              >
+                <option value={10}>10</option>
+                <option value={20}>20</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+                <option value={-1}>All</option>
+              </select>
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
-      <div className="summary-table-container">
-        <table className="summary-table">
-          <thead>
-            <tr>
-              <th>Athlete</th>
-              <th>Races</th>
-              <th>Total Distance</th>
-              <th>Total Time</th>
-              <th>Avg Pace</th>
-            </tr>
-          </thead>
-          <tbody>
-            {paginatedData.map((stat) => {
-              const isSelected = selectedAthletes.includes(stat.athleteName);
-              return (
-                <tr key={stat.athleteName} className={isSelected ? 'selected-athlete' : ''}>
-                  <td>
-                    <div className="athlete-cell">
-                      {stat.profilePhoto && (
-                        <img
-                          src={stat.profilePhoto}
-                          alt={stat.athleteName}
-                          className="athlete-avatar-small"
-                        />
-                      )}
-                      <span
-                        className="athlete-name-clickable"
-                        onClick={() => handleAthleteClick(stat.athleteName)}
-                        title={isSelected ? 'Click to remove from filter' : 'Click to add to filter'}
-                      >
-                        {stat.athleteName}
-                      </span>
-                    </div>
-                  </td>
-                  <td>{stat.activityCount}</td>
-                  <td>{formatDistance(stat.totalDistance)} km</td>
-                  <td>{formatTime(stat.totalTime)}</td>
-                  <td>{formatPace(stat.averagePace)} /km</td>
+      {!isCollapsed && (
+        <>
+          <div className="summary-table-container">
+            <table className="summary-table">
+              <thead>
+                <tr>
+                  <th>Athlete</th>
+                  <th>Races</th>
+                  <th>Total Distance</th>
+                  <th>Total Time</th>
+                  <th>Avg Pace</th>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+              </thead>
+              <tbody>
+                {paginatedData.map((stat) => {
+                  const isSelected = selectedAthletes.includes(stat.athleteName);
+                  return (
+                    <tr key={stat.athleteName} className={isSelected ? 'selected-athlete' : ''}>
+                      <td>
+                        <div className="athlete-cell">
+                          {stat.profilePhoto && (
+                            <img
+                              src={stat.profilePhoto}
+                              alt={stat.athleteName}
+                              className="athlete-avatar-small"
+                            />
+                          )}
+                          <span
+                            className="athlete-name-clickable"
+                            onClick={() => handleAthleteClick(stat.athleteName)}
+                            title={isSelected ? 'Click to remove from filter' : 'Click to add to filter'}
+                          >
+                            {stat.athleteName}
+                          </span>
+                        </div>
+                      </td>
+                      <td>{stat.activityCount}</td>
+                      <td>{formatDistance(stat.totalDistance)} km</td>
+                      <td>{formatTime(stat.totalTime)}</td>
+                      <td>{formatPace(stat.averagePace)} /km</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
 
-      {!showAll && totalPages > 1 && (
-        <div className="summary-pagination">
-          <button
-            className="pagination-button"
-            onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
-            disabled={currentPage === 1}
-          >
-            Previous
-          </button>
-          <span className="pagination-info">
-            Page {currentPage} of {totalPages}
-          </span>
-          <button
-            className="pagination-button"
-            onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
-            disabled={currentPage === totalPages}
-          >
-            Next
-          </button>
-        </div>
+          {!showAll && totalPages > 1 && (
+            <div className="summary-pagination">
+              <button
+                className="pagination-button"
+                onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+                disabled={currentPage === 1}
+              >
+                Previous
+              </button>
+              <span className="pagination-info">
+                Page {currentPage} of {totalPages}
+              </span>
+              <button
+                className="pagination-button"
+                onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
+                disabled={currentPage === totalPages}
+              >
+                Next
+              </button>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

@@ -32,6 +32,11 @@ async function cleanupOrphanedSyncProgress(env: Env): Promise<void> {
           SELECT sync_session_id FROM sync_queue
           WHERE status IN ('pending', 'processing')
         )
+        AND sp.sync_session_id NOT IN (
+          SELECT parent_session_id FROM sync_queue
+          WHERE status IN ('pending', 'processing')
+            AND parent_session_id IS NOT NULL
+        )
     `).all<{
       id: number;
       sync_session_id: string;

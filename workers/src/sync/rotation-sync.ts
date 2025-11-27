@@ -602,7 +602,7 @@ export async function syncAthlete(
       // Split into 1-year chunks, working backwards from now
       const nowTimestamp = beforeTimestamp || Math.floor(Date.now() / 1000);
       const oneYearSeconds = 365 * 24 * 60 * 60;
-      const chunks: Array<{ after: number; before: number }> = [];
+      const initialChunks: Array<{ after: number; before: number }> = [];
 
       // Determine how far back we need to go
       // Assume athlete joined in 2010 or use afterTimestamp if provided
@@ -611,9 +611,88 @@ export async function syncAthlete(
       let currentBefore = nowTimestamp;
       while (currentBefore > startTimestamp) {
         const currentAfter = Math.max(startTimestamp, currentBefore - oneYearSeconds);
-        chunks.push({ after: currentAfter, before: currentBefore });
+        initialChunks.push({ after: currentAfter, before: currentBefore });
         currentBefore = currentAfter;
       }
+
+      // Smart chunk combining based on previous empty chunks
+      // Check if this athlete has recent empty time chunks that can guide combining
+      const emptyChunks = await env.DB.prepare(`
+        SELECT after_date, before_date
+        FROM sync_queue
+        WHERE athlete_id = ?
+          AND sync_type = 'chunked_time_fetch'
+          AND status = 'completed'
+          AND parent_session_id != ?
+        ORDER BY created_at DESC
+        LIMIT 10
+      `).bind(athlete.id, sessionId).all<{ after_date: string; before_date: string }>();
+
+      // Build a set of empty time ranges from previous syncs
+      const emptyRanges = new Set<string>();
+      if (emptyChunks.results && emptyChunks.results.length > 0) {
+        for (const chunk of emptyChunks.results) {
+          // Check if this chunk returned 0 activities
+          const chunkProgress = await env.DB.prepare(`
+            SELECT total_activities_fetched
+            FROM sync_progress
+            WHERE sync_session_id LIKE ?
+              AND status = 'completed'
+              AND (total_activities_fetched = 0 OR total_activities_fetched IS NULL)
+          `).bind(`%-time-${chunk.after_date}-${chunk.before_date}%`).first<{ total_activities_fetched: number | null }>();
+
+          if (chunkProgress) {
+            emptyRanges.add(`${chunk.after_date}:${chunk.before_date}`);
+          }
+        }
+      }
+
+      // Combine chunks intelligently
+      const optimizedChunks: Array<{ after: number; before: number; multiplier: number }> = [];
+      let combineMultiplier = 1;
+
+      for (let i = initialChunks.length - 1; i >= 0; i--) {
+        const chunk = initialChunks[i];
+        const afterDate = new Date(chunk.after * 1000).toISOString().split('T')[0];
+        const beforeDate = new Date(chunk.before * 1000).toISOString().split('T')[0];
+        const rangeKey = `${afterDate}:${beforeDate}`;
+
+        // Check if we have enough future chunks to combine
+        const hasEnoughFutureChunks = i >= combineMultiplier;
+
+        if (emptyRanges.has(rangeKey) && hasEnoughFutureChunks) {
+          // This chunk was empty in previous sync - increase combine multiplier
+          combineMultiplier++;
+          console.log(`[RotationSync] Empty range detected: ${afterDate} to ${beforeDate}, will combine next ${combineMultiplier} chunks`);
+        } else if (combineMultiplier > 1 && hasEnoughFutureChunks) {
+          // Combine this chunk with the next (combineMultiplier - 1) chunks
+          const chunksToGrab = Math.min(combineMultiplier, i + 1);
+          const startIdx = i - chunksToGrab + 1;
+          const combinedAfter = initialChunks[startIdx].after;
+          const combinedBefore = chunk.before;
+
+          optimizedChunks.push({
+            after: combinedAfter,
+            before: combinedBefore,
+            multiplier: chunksToGrab,
+          });
+
+          console.log(`[RotationSync] Combined ${chunksToGrab} chunks into range: ${new Date(combinedAfter * 1000).toISOString().split('T')[0]} to ${new Date(combinedBefore * 1000).toISOString().split('T')[0]}`);
+
+          // Skip the chunks we just combined
+          i = i - chunksToGrab + 1;
+          combineMultiplier = 1;
+        } else {
+          // Normal chunk (no combining)
+          optimizedChunks.push({ after: chunk.after, before: chunk.before, multiplier: 1 });
+          combineMultiplier = 1;
+        }
+      }
+
+      // Reverse to get chronological order (oldest first)
+      optimizedChunks.reverse();
+
+      const chunks = optimizedChunks;
 
       await logSyncStep(
         env,
@@ -621,7 +700,7 @@ export async function syncAthlete(
         athlete.id,
         'fetching_activities',
         'info',
-        `Creating ${chunks.length} time-based chunks (1 year each) to process activities`
+        `Creating ${chunks.length} time-based chunks (optimized from ${initialChunks.length} base chunks) to process activities`
       );
 
       // Create time-chunked jobs in the queue
