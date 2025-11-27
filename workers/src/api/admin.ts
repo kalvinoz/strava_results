@@ -864,8 +864,54 @@ export async function getAdminSyncStatus(request: Request, env: Env): Promise<Re
       error_message: sync.error_message,
     }));
 
+    // Get queued syncs (pending in sync_queue)
+    const queuedSyncs = await env.DB.prepare(`
+      SELECT
+        sq.id as queue_id,
+        sq.sync_session_id,
+        sq.athlete_id,
+        sq.strava_id,
+        sq.sync_type,
+        sq.after_date,
+        sq.before_date,
+        sq.status,
+        sq.attempts,
+        sq.max_attempts,
+        sq.created_at,
+        sq.chunk_index,
+        sq.total_chunks,
+        sq.parent_session_id,
+        a.firstname,
+        a.lastname
+      FROM sync_queue sq
+      JOIN athletes a ON sq.athlete_id = a.id
+      WHERE sq.status = 'pending'
+      ORDER BY sq.created_at ASC
+    `).all();
+
+    const queued = (queuedSyncs.results || []).map((job: any, index: number) => ({
+      id: job.sync_session_id,
+      queue_id: job.queue_id,
+      position: index + 1, // Position in queue (1-based)
+      athlete_id: job.athlete_id,
+      strava_id: job.strava_id,
+      first_name: job.firstname,
+      last_name: job.lastname,
+      sync_type: job.sync_type,
+      job_type: `${job.sync_type}_sync`,
+      status: 'queued',
+      queued_at: job.created_at ? job.created_at * 1000 : null,
+      attempts: job.attempts || 0,
+      max_attempts: job.max_attempts || 3,
+      after_date: job.after_date,
+      before_date: job.before_date,
+      chunk_info: job.total_chunks ? `Chunk ${(job.chunk_index || 0) + 1}/${job.total_chunks}` : null,
+      parent_session_id: job.parent_session_id,
+    }));
+
     const combinedStatus = {
       active,
+      queued,
       recent,
     };
 

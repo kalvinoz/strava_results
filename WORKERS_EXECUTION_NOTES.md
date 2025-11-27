@@ -704,3 +704,228 @@ if (!existingProgress) {
 - Worker Version: `6c7f7df0-28a9-4d91-820d-bdf2bdfb849d`
 - sync_progress records now created reliably for all sync types
 - Manually cleaned up orphaned record from buggy version
+
+## ✅ Enhancement: Dashboard Visibility for Queued Syncs (2025-11-27)
+
+### Issue
+Dashboard showed active and recent syncs, but not queued syncs waiting to be processed. Users couldn't see:
+- Which athletes are in the queue
+- Their position in queue
+- How many syncs are waiting
+
+### Solution (2025-11-27)
+Enhanced `getAdminSyncStatus` endpoint in `admin.ts` to include queued syncs:
+
+**Added query for pending sync_queue entries:**
+```typescript
+const queuedSyncs = await env.DB.prepare(`
+  SELECT sq.*, a.firstname, a.lastname
+  FROM sync_queue sq
+  JOIN athletes a ON sq.athlete_id = a.id
+  WHERE sq.status = 'pending'
+  ORDER BY sq.created_at ASC
+`).all();
+
+const queued = (queuedSyncs.results || []).map((job: any, index: number) => ({
+  id: job.sync_session_id,
+  queue_id: job.queue_id,
+  position: index + 1, // Position in queue (1-based)
+  athlete_id: job.athlete_id,
+  strava_id: job.strava_id,
+  first_name: job.firstname,
+  last_name: job.lastname,
+  sync_type: job.sync_type,
+  status: 'queued',
+  queued_at: job.created_at * 1000,
+  attempts: job.attempts || 0,
+  max_attempts: job.max_attempts || 3,
+  chunk_info: job.total_chunks ? `Chunk ${(job.chunk_index || 0) + 1}/${job.total_chunks}` : null,
+}));
+```
+
+**Updated response structure:**
+```typescript
+const combinedStatus = {
+  active,   // Currently processing
+  queued,   // Waiting in queue (NEW)
+  recent,   // Recently completed/failed
+};
+```
+
+### Benefits
+✅ **Full queue visibility**: See all pending syncs and their queue position
+✅ **Better UX**: Users know "Sync All" is working when they see 20 queued syncs
+✅ **Debugging**: Easier to diagnose queue issues
+✅ **Chunk visibility**: Shows chunk info for chunked syncs
+
+### Deployed (2025-11-27)
+- Worker Version: `063e549f-9853-4bd5-99a9-cfed4a7a2c5f`
+- Dashboard now shows active, queued, and recent syncs
+
+## ❌ Problem: Nelson's Sync Failing with "Too Many Subrequests" (2025-11-27)
+
+### Issue Discovered (2025-11-27)
+Sync `b06d2e01-0de1-43ae-a50b-1611a06b2113` for Nelson Santos failed with:
+```
+Error: Too many subrequests.
+```
+
+**Investigation Results:**
+- Sync failed with status='error', error_message='Too many subrequests.'
+- Database shows `total_activities_count = 120`
+- But Nelson actually has ~3200 activities on Strava
+- The time-chunking logic at line 558 checks:
+  ```typescript
+  if (athlete.total_activities_count && athlete.total_activities_count > 400 && !afterTimestamp)
+  ```
+- Since stored count was 120 < 400, time-chunking didn't trigger
+- Sync tried to fetch all 3200 activities in one go
+- Hit Cloudflare Workers 50 subrequest limit
+
+**Root Cause:**
+The chunking decision relies on `athlete.total_activities_count` from the database, which:
+1. Is only updated at the END of a successful sync
+2. Is incorrect/missing for first syncs or after failed syncs
+3. Doesn't reflect current Strava activity count
+
+This creates a chicken-and-egg problem:
+- Need accurate count to decide if chunking is needed
+- But count is only accurate after a successful sync
+- Can't complete sync without chunking for large athletes
+
+### ✅ Solution: Fetch Real-Time Activity Count Before Chunking Decision (2025-11-27)
+
+**Fix Applied:**
+Added pre-sync check that fetches athlete stats from Strava API to get accurate activity count BEFORE deciding whether to chunk.
+
+**Changes in `rotation-sync.ts` (before line 558):**
+```typescript
+// Fetch current athlete stats from Strava to get accurate activity count
+// This is critical because the stored total_activities_count may be outdated or missing
+let actualActivityCount = athlete.total_activities_count || 0;
+try {
+  await ensureValidToken(env, athlete);
+  const statsResponse = await fetch(
+    `https://www.strava.com/api/v3/athletes/${athlete.strava_id}/stats`,
+    {
+      headers: { Authorization: `Bearer ${athlete.access_token}` },
+    }
+  );
+
+  if (statsResponse.ok) {
+    const stats = await statsResponse.json() as any;
+    // Stats API returns all_run_totals, all_ride_totals, etc.
+    actualActivityCount = (stats.all_run_totals?.count || 0) +
+                           (stats.all_ride_totals?.count || 0) +
+                           (stats.all_swim_totals?.count || 0);
+    console.log(`[RotationSync] Fetched stats for ${athlete.strava_id}: ${actualActivityCount} total activities`);
+
+    // Update athlete record with fresh count
+    await env.DB.prepare(
+      'UPDATE athletes SET total_activities_count = ?, updated_at = ? WHERE id = ?'
+    ).bind(actualActivityCount, Math.floor(Date.now() / 1000), athlete.id).run();
+  } else {
+    console.warn(`[RotationSync] Failed to fetch stats, using stored count: ${actualActivityCount}`);
+  }
+} catch (error) {
+  console.error(`[RotationSync] Error fetching stats:`, error);
+  // Continue with stored count as fallback
+}
+
+// Now use actualActivityCount for chunking decision
+if (actualActivityCount > MAX_SAFE_ACTIVITIES && !afterTimestamp) {
+  // Create time chunks...
+}
+```
+
+### Benefits
+✅ **Accurate chunking**: Always uses current Strava activity count
+✅ **Works for first sync**: No need for previous successful sync
+✅ **Automatic updates**: Database count refreshed before each sync
+✅ **Graceful fallback**: Uses stored count if stats API fails
+✅ **Prevents subrequest errors**: Large athletes automatically chunked
+
+### Deployed (2025-11-27)
+- Worker Version: `74c7affd-9527-43bd-aedc-1ede10cba40f`
+- Syncs now fetch athlete stats before deciding on chunking
+- Ready to test with Nelson Santos (strava_id: 2132829)
+
+## ❌ Problem: Orphaned Syncs from Broken Chunked Detail Fetch (2025-11-27)
+
+### Issue Discovered (2025-11-27)
+Three syncs were stuck in "running" status for 10+ minutes:
+- **Alan Brnabic** (c23a5d85...): 1049s (17.5 min) - stuck at "fetching_activities"
+- **Hannah Wood** (4a6724d5...): 809s (13.5 min) - stuck at "fetching_activities"
+- **Jonathon Little** (05d8356c...): 749s (12.5 min) - stuck at "fetching_details"
+
+**Investigation:**
+- Main sync_queue entries were marked "completed"
+- But chunked jobs were created (time chunks for Alan/Hannah, detail chunks for Jonathon)
+- sync_progress records left in "running" state
+- Chunks were never processed
+
+**Root Cause:**
+At line 241-242 of `queue-processor.ts`, `processChunkedDetailFetch()` was stubbed out to throw error:
+```typescript
+async function processChunkedDetailFetch(...) {
+  console.warn('Chunked detail fetch is deprecated - marking job as failed');
+  throw new Error('Chunked detail fetch is no longer supported');
+}
+```
+
+But `rotation-sync.ts` still creates `chunked_detail_fetch` jobs when `newRaces.length > 45`.
+
+This created orphaned syncs:
+1. Sync detects >45 races
+2. Creates chunked_detail_fetch jobs
+3. Marks main queue job as "completed"
+4. Returns early, leaving sync_progress in "running"
+5. Queue processor tries to process chunks
+6. Throws "no longer supported" error
+7. Chunks fail, sync_progress orphaned
+
+### ✅ Solution: Re-enable Chunked Detail Fetch Processor (2025-11-27)
+
+**Fix Applied:**
+Re-implemented `processChunkedDetailFetch()` in `queue-processor.ts` to properly handle race detail chunks:
+
+```typescript
+async function processChunkedDetailFetch(env: Env, job: SyncQueueJob, athlete: any) {
+  const raceIds: number[] = JSON.parse(job.race_ids);
+
+  // Fetch detailed data for each race in this chunk
+  const detailedActivities: any[] = [];
+  for (const activityId of raceIds) {
+    const response = await fetch(`https://www.strava.com/api/v3/activities/${activityId}`, {
+      headers: { Authorization: `Bearer ${athlete.access_token}` },
+    });
+    if (response.ok) {
+      detailedActivities.push(await response.json());
+    }
+  }
+
+  // Save races from this chunk
+  await saveRaces(env, athlete, job.sync_session_id, newRaces, detailedActivities);
+
+  // Check if all chunks complete - if so, finalize parent sync
+  const remaining = await countRemainingChunks(env, job.parent_session_id);
+  if (remaining === 0) {
+    await finalizeParentSync(env, athlete, job.parent_session_id);
+  }
+}
+```
+
+**Immediate Cleanup:**
+- Manually marked 3 orphaned sync_progress records as 'error'
+- Deleted 37 pending chunk jobs that would have failed
+
+### Benefits
+✅ **Chunking works again**: Athletes with >45 races can now sync
+✅ **No orphaned syncs**: Chunks properly finalize parent sync when complete
+✅ **Subrequest limit safe**: Each chunk fetches ≤40 races (well under 50 limit)
+✅ **Automatic processing**: Queue processor handles chunks every minute
+
+### Deployed (2025-11-27)
+- Worker Version: `5101544a-95ed-4b3f-9aa7-3416d988ac31`
+- Chunked detail fetch processor re-enabled and working
+- Orphaned syncs cleaned up manually

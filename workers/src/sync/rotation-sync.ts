@@ -555,7 +555,40 @@ export async function syncAthlete(
     const MAX_SAFE_ACTIVITY_PAGES = 2; // Conservative: 2 pages + up to 40 races = ~42 subrequests
     const MAX_SAFE_ACTIVITIES = ACTIVITIES_PER_PAGE * MAX_SAFE_ACTIVITY_PAGES; // 400
 
-    if (athlete.total_activities_count && athlete.total_activities_count > MAX_SAFE_ACTIVITIES && !afterTimestamp) {
+    // Fetch current athlete stats from Strava to get accurate activity count
+    // This is critical because the stored total_activities_count may be outdated or missing
+    let actualActivityCount = athlete.total_activities_count || 0;
+    try {
+      await ensureValidToken(env, athlete);
+      const statsResponse = await fetch(
+        `https://www.strava.com/api/v3/athletes/${athlete.strava_id}/stats`,
+        {
+          headers: { Authorization: `Bearer ${athlete.access_token}` },
+        }
+      );
+
+      if (statsResponse.ok) {
+        const stats = await statsResponse.json() as any;
+        // Stats API returns all_run_totals, all_ride_totals, etc.
+        // We sum up all activity counts from ytd totals
+        actualActivityCount = (stats.all_run_totals?.count || 0) +
+                               (stats.all_ride_totals?.count || 0) +
+                               (stats.all_swim_totals?.count || 0);
+        console.log(`[RotationSync] Fetched stats for ${athlete.strava_id}: ${actualActivityCount} total activities`);
+
+        // Update athlete record with fresh count
+        await env.DB.prepare(
+          'UPDATE athletes SET total_activities_count = ?, updated_at = ? WHERE id = ?'
+        ).bind(actualActivityCount, Math.floor(Date.now() / 1000), athlete.id).run();
+      } else {
+        console.warn(`[RotationSync] Failed to fetch stats for ${athlete.strava_id}, using stored count: ${actualActivityCount}`);
+      }
+    } catch (error) {
+      console.error(`[RotationSync] Error fetching stats for ${athlete.strava_id}:`, error);
+      // Continue with stored count
+    }
+
+    if (actualActivityCount > MAX_SAFE_ACTIVITIES && !afterTimestamp) {
       // Too many activities - need to chunk by time
       await logSyncStep(
         env,
@@ -563,7 +596,7 @@ export async function syncAthlete(
         athlete.id,
         'fetching_activities',
         'info',
-        `Large athlete detected: ${athlete.total_activities_count} total activities. Chunking by time to avoid subrequest limits.`
+        `Large athlete detected: ${actualActivityCount} total activities. Chunking by time to avoid subrequest limits.`
       );
 
       // Split into 1-year chunks, working backwards from now

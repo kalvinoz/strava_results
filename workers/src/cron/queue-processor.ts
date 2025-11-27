@@ -231,13 +231,94 @@ async function processChunkedTimeFetch(
 
 /**
  * Process a race detail chunk job (fetch details for a batch of races)
- * NOTE: Chunk processing is no longer used - keeping for backward compatibility
  */
 async function processChunkedDetailFetch(
   env: Env,
   job: SyncQueueJob,
   athlete: any
 ): Promise<void> {
-  console.warn(`[DetailChunkProcessor] Chunked detail fetch is deprecated - marking job ${job.id} as failed`);
-  throw new Error('Chunked detail fetch is no longer supported');
+  const chunkNum = (job.chunk_index || 0) + 1;
+  console.log(`[DetailChunkProcessor] Processing detail chunk ${chunkNum}/${job.total_chunks} for sync ${job.parent_session_id}`);
+
+  if (!job.race_ids) {
+    throw new Error('No race_ids provided for chunked detail fetch');
+  }
+
+  const raceIds: number[] = JSON.parse(job.race_ids);
+  console.log(`[DetailChunkProcessor] Fetching details for ${raceIds.length} races`);
+
+  // Import sync functions
+  const { ensureValidToken } = await import('../utils/strava');
+
+  // Ensure token is valid
+  await ensureValidToken(env, athlete);
+
+  // Fetch detailed data for each race in this chunk
+  const detailedActivities: any[] = [];
+  for (const activityId of raceIds) {
+    try {
+      const response = await fetch(
+        `https://www.strava.com/api/v3/activities/${activityId}`,
+        {
+          headers: { Authorization: `Bearer ${athlete.access_token}` },
+        }
+      );
+
+      if (!response.ok) {
+        console.error(`[DetailChunkProcessor] Failed to fetch activity ${activityId}: ${response.status}`);
+        continue;
+      }
+
+      const activity = await response.json();
+      detailedActivities.push(activity);
+    } catch (error) {
+      console.error(`[DetailChunkProcessor] Error fetching activity ${activityId}:`, error);
+    }
+  }
+
+  console.log(`[DetailChunkProcessor] Fetched ${detailedActivities.length}/${raceIds.length} race details`);
+
+  // Save races from this chunk
+  const { saveRaces } = await import('../sync/rotation-sync');
+  // Note: We need to reconstruct the newRaces array from the activity IDs
+  const newRaces = raceIds.map(id => ({ id }));
+  await saveRaces(env, athlete, job.sync_session_id, newRaces, detailedActivities);
+
+  console.log(`[DetailChunkProcessor] Chunk ${chunkNum}/${job.total_chunks} complete`);
+
+  // Check if all detail chunks are complete
+  const remainingChunks = await env.DB.prepare(
+    `SELECT COUNT(*) as count FROM sync_queue
+     WHERE parent_session_id = ? AND sync_type = 'chunked_detail_fetch' AND status IN ('pending', 'processing')`
+  ).bind(job.parent_session_id).first<{ count: number }>();
+
+  const remaining = remainingChunks?.count || 0;
+  console.log(`[DetailChunkProcessor] Detail chunk ${chunkNum}/${job.total_chunks} complete. ${remaining} chunks remaining.`);
+
+  if (remaining === 0) {
+    // All detail chunks processed - finalize parent sync
+    const raceCountResult = await env.DB.prepare(
+      'SELECT COUNT(*) as count FROM races WHERE athlete_id = ?'
+    ).bind(athlete.id).first<{ count: number }>();
+    const totalRaceCount = raceCountResult?.count || 0;
+    const completedAt = Math.floor(Date.now() / 1000);
+
+    // Get total activities count from parent sync_progress
+    const parentProgress = await env.DB.prepare(
+      `SELECT total_activities_fetched FROM sync_progress WHERE sync_session_id = ?`
+    ).bind(job.parent_session_id).first<{ total_activities_fetched: number }>();
+    const totalActivities = parentProgress?.total_activities_fetched || 0;
+
+    await env.DB.prepare(
+      `UPDATE sync_progress SET status = 'completed', current_step = 'completed', completed_at = ?
+       WHERE sync_session_id = ?`
+    ).bind(completedAt, job.parent_session_id).run();
+
+    await env.DB.prepare(
+      `UPDATE athletes SET current_sync_step = 'completed', last_synced_at = ?, race_count = ?, total_activities_count = ?, updated_at = ?
+       WHERE id = ?`
+    ).bind(completedAt, totalRaceCount, totalActivities, completedAt, athlete.id).run();
+
+    console.log(`[DetailChunkProcessor] Sync ${job.parent_session_id} finalized. Total activities: ${totalActivities}, Total races: ${totalRaceCount}`);
+  }
 }
