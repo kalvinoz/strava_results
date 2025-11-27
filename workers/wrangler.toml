@@ -17,11 +17,11 @@ migrations_dir = "../database/migrations"
 binding = "AI"
 
 # Scheduled cron triggers
-# 1. Weekly full sync trigger (Monday 2 AM UTC) - queues all athletes for sync
+# 1. Every hour - Daily rotation sync (one athlete per hour, spread over 24 hours)
 # 2. Every minute - Process sync queue + batches + health check
 [triggers]
 crons = [
-  "0 2 * * 1",  # Weekly: Queue all athletes for sync (Monday 2 AM UTC)
+  "0 * * * *",  # Every hour: Process next athlete in daily rotation
   "* * * * *"   # Every minute: Process sync queue + batches + health check
 ]
 

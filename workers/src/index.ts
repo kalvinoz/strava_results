@@ -640,7 +640,7 @@ export default {
   /**
    * Handle scheduled cron triggers
    * Two cron schedules:
-   * 1. Weekly (Monday 2 AM UTC) - Queue all athletes for sync
+   * 1. Every hour - Daily rotation sync (one athlete per hour)
    * 2. Every minute - Process sync queue + batches + health check
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
@@ -648,15 +648,22 @@ export default {
 
     try {
       // Determine which cron triggered this
-      if (event.cron === '0 2 * * 1') {
-        // Weekly full sync: Queue all athletes
-        console.log('Weekly cron: Queueing all athletes for full sync...');
-        const jobIds = await queueAllAthletes(env, 'full_sync', 0);
-        console.log(`Queued ${jobIds.length} athletes for full sync`);
+      if (event.cron === '0 * * * *') {
+        // Every hour: Process next athlete in daily rotation
+        console.log('[DailyRotation] Processing next athlete in rotation...');
+        const processed = await syncAllAthletes(env);
+        if (processed) {
+          console.log('[DailyRotation] Successfully queued next athlete');
+        } else {
+          console.log('[DailyRotation] No athletes due for sync or already syncing');
+        }
 
-        // Also clean up old completed jobs
-        const deleted = await cleanupOldJobs(env);
-        console.log(`Cleaned up ${deleted} old queue jobs`);
+        // Clean up old completed jobs (once per day at midnight)
+        const hour = new Date(event.scheduledTime).getUTCHours();
+        if (hour === 0) {
+          const deleted = await cleanupOldJobs(env);
+          console.log(`[DailyRotation] Cleaned up ${deleted} old queue jobs`);
+        }
 
       } else if (event.cron === '* * * * *') {
         // Every minute: Process sync queue + batches + health check
