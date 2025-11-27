@@ -804,7 +804,7 @@ Added pre-sync check that fetches athlete stats from Strava API to get accurate 
 // This is critical because the stored total_activities_count may be outdated or missing
 let actualActivityCount = athlete.total_activities_count || 0;
 try {
-  await ensureValidToken(env, athlete);
+  await ensureValidToken(athlete, env);
   const statsResponse = await fetch(
     `https://www.strava.com/api/v3/athletes/${athlete.strava_id}/stats`,
     {
@@ -929,3 +929,301 @@ async function processChunkedDetailFetch(env: Env, job: SyncQueueJob, athlete: a
 - Worker Version: `5101544a-95ed-4b3f-9aa7-3416d988ac31`
 - Chunked detail fetch processor re-enabled and working
 - Orphaned syncs cleaned up manually
+
+---
+
+## Issue #9: Chunked Sync Finalization Bug (2025-11-27)
+
+### Problem
+Time-chunked and detail-chunked syncs were not finalizing properly when all chunks completed. Parent `sync_progress` records remained in 'running' status forever, causing:
+1. **Orphaned parent syncs**: Florence's sync had 16 time chunks all complete but parent still 'running'
+2. **Stale athlete states**: Alan, Hannah, and Jonathan stuck in 'queued' or 'checking_existing' states
+3. **Blocked manual syncs**: Users couldn't trigger new syncs because athletes appeared busy
+
+### Root Cause
+**Race condition in finalization logic** (queue-processor.ts lines 194-229, 309-343):
+
+```typescript
+// OLD CODE (BROKEN):
+const remainingChunks = await env.DB.prepare(
+  `SELECT COUNT(*) as count FROM sync_queue
+   WHERE parent_session_id = ? AND sync_type = 'chunked_time_fetch'
+   AND status IN ('pending', 'processing')`
+).bind(job.parent_session_id).first<{ count: number }>();
+
+if (remaining === 0) {
+  // Finalize parent sync
+}
+```
+
+**Execution sequence:**
+1. Last chunk job executes `processChunkedTimeFetch()`
+2. Line 194-198: Check for remaining chunks with status='pending' OR 'processing'
+3. **Current job is still 'processing'** (not marked 'completed' until line 98-103)
+4. Query returns `count = 1` (the current chunk itself)
+5. `remaining = 1`, not 0 → finalization never triggers
+6. Job completes at line 98-103
+7. **Parent sync orphaned forever**
+
+### Solution
+Exclude the current job from the remaining chunks query:
+
+```typescript
+// NEW CODE (FIXED):
+const remainingChunks = await env.DB.prepare(
+  `SELECT COUNT(*) as count FROM sync_queue
+   WHERE parent_session_id = ? AND sync_type = 'chunked_time_fetch'
+   AND status IN ('pending', 'processing') AND id != ?`  // ← Added "AND id != ?"
+).bind(job.parent_session_id, job.id).first<{ count: number }>();
+```
+
+Now when the last chunk checks:
+- Query excludes current job's ID
+- Returns `count = 0` (no OTHER pending/processing chunks)
+- `remaining = 0` → finalization triggers correctly
+
+### Manual Cleanup Required
+
+**Florence's orphaned sync:**
+```sql
+-- Update parent sync_progress
+UPDATE sync_progress
+SET status = 'completed', current_step = 'completed',
+    total_activities_fetched = 525, races_filtered = 13,
+    completed_at = strftime('%s', 'now')
+WHERE sync_session_id = '39b32cd6-551c-460e-8739-beb887b1b446';
+
+-- Update athlete totals
+UPDATE athletes
+SET current_sync_step = 'completed', race_count = 13,
+    total_activities_count = 525, last_synced_at = strftime('%s', 'now'),
+    updated_at = strftime('%s', 'now')
+WHERE id = 48;  -- Florence
+```
+
+**Alan, Hannah, Jonathan stuck states:**
+```sql
+UPDATE athletes
+SET current_sync_step = 'idle', updated_at = strftime('%s', 'now')
+WHERE strava_id IN (100119213, 108612856, 3761615);
+-- Fixed: Alan (queued), Hannah (queued), Jonathan (checking_existing)
+```
+
+### Benefits
+✅ **Automatic finalization**: Time/detail chunks now properly complete parent syncs
+✅ **No more orphaned syncs**: Last chunk triggers finalization correctly
+✅ **Manual syncs work**: Athletes properly reset to 'idle' after completion
+✅ **Same fix for both**: Applied to both `processChunkedTimeFetch()` and `processChunkedDetailFetch()`
+
+### Deployed (2025-11-27)
+- Worker Version: `08554f7b-1837-4559-bb61-37742228c13e`
+- Fixed queue-processor.ts lines 194-198 (time chunks) and 309-313 (detail chunks)
+- Manually cleaned up 1 orphaned parent sync (Florence)
+- Reset 3 stale athlete states (Alan, Hannah, Jonathan)
+
+---
+
+## Additional Findings: Investigation Details for Issue #9 (2025-11-27)
+
+### How the Bug Was Discovered
+
+**User Report:**
+> "there's a few syncs that have been there for 10+ minutes. check that they're not stalled"
+
+**Initial Investigation:**
+1. Checked sync_progress for running syncs older than 10 minutes
+2. Found Florence's sync with 16 completed time chunks but parent still "running"
+3. Discovered pattern: All chunk jobs marked "completed" but finalization never ran
+
+**User Feedback During Fix:**
+> "alan and hannah still show as queue in the Athletes & Sync dashboard"
+
+This led to discovery that athlete records had stale `current_sync_step` values even after syncs completed.
+
+### Database State Analysis
+
+**Florence's Orphaned Sync:**
+```sql
+-- Parent sync_progress: STUCK
+sync_session_id: 39b32cd6-551c-460e-8739-beb887b1b446
+status: 'running'
+current_step: 'fetching_activities'
+started_at: [timestamp]
+
+-- All 16 time chunks: COMPLETED
+time-0 through time-15: status='completed'
+
+-- sync_queue entries: ALL COMPLETED
+17 total jobs (1 parent + 16 chunks): status='completed'
+
+-- Result: Parent sync orphaned with no mechanism to finalize
+```
+
+**Athlete State Issues:**
+```sql
+-- Alan Brnabic (strava_id: 100119213)
+current_sync_step: 'queued'
+last_synced_at: 1764209238  -- Recently synced successfully
+-- Issue: Stuck in 'queued' prevents new syncs
+
+-- Hannah Wood (strava_id: 108612856)
+current_sync_step: 'queued'
+last_synced_at: 1764119002  -- Recently synced successfully
+-- Issue: Stuck in 'queued' prevents new syncs
+
+-- Jonathon Little (strava_id: 3761615)
+current_sync_step: 'checking_existing'
+last_synced_at: 1763865382  -- Older sync
+-- Issue: Stuck in 'checking_existing' prevents new syncs
+```
+
+### Impact on User Experience
+
+**Before Fix:**
+1. **Florence**: 16 time chunks completed but dashboard showed "running" forever
+2. **Alan/Hannah**: Dashboard showed "queued" but no sync happening
+3. **Jonathan**: User tried to trigger manual sync, got error "Athlete is already syncing"
+4. **All three**: Blocked from running new syncs due to stale states
+
+**Admin Endpoint Rejection:**
+```typescript
+// admin.ts line 349-354
+if (athlete.current_sync_step && !['idle', 'completed', 'error'].includes(athlete.current_sync_step)) {
+  return new Response(
+    JSON.stringify({ error: 'Athlete is already syncing', current_step: athlete.current_sync_step }),
+    { status: 409, headers: { 'Content-Type': 'application/json' } }
+  );
+}
+```
+
+This check prevented manual sync triggers for all three athletes.
+
+### Technical Deep Dive: The Race Condition
+
+**Queue Processor Execution Flow:**
+```typescript
+// queue-processor.ts processQueuedSyncs()
+Line 58-65:  Mark job as 'processing'
+Line 84-85:  Call processChunkedTimeFetch()
+  Line 194-198: Check remaining chunks
+  Line 203-229: Finalize if remaining === 0  ← NEVER TRIGGERED
+Line 97-103: Mark job as 'completed'  ← Happens AFTER chunk processor returns
+```
+
+**Why Finalization Failed:**
+```
+Time 0ms:  Last chunk job starts processing
+Time 1ms:  Job status: 'processing' in database
+Time 2ms:  processChunkedTimeFetch() executes
+Time 3ms:  Query: SELECT COUNT(*) WHERE status IN ('pending', 'processing')
+Time 4ms:  Result: count = 1 (current job still 'processing')
+Time 5ms:  remaining = 1, skip finalization
+Time 6ms:  Return from processChunkedTimeFetch()
+Time 7ms:  Mark current job as 'completed'
+Time 8ms:  ORPHANED: No code will ever run finalization now
+```
+
+**The Fix:**
+```sql
+-- OLD (BROKEN):
+SELECT COUNT(*) as count FROM sync_queue
+WHERE parent_session_id = ?
+  AND sync_type = 'chunked_time_fetch'
+  AND status IN ('pending', 'processing')
+
+-- NEW (FIXED):
+SELECT COUNT(*) as count FROM sync_queue
+WHERE parent_session_id = ?
+  AND sync_type = 'chunked_time_fetch'
+  AND status IN ('pending', 'processing')
+  AND id != ?  -- ← Exclude current job
+```
+
+Now the last chunk correctly sees `remaining = 0` and triggers finalization.
+
+### Manual Cleanup SQL Commands
+
+**Florence's Sync Finalization:**
+```sql
+-- Calculate totals from completed chunks
+SELECT SUM(total_activities_fetched) as total_activities,
+       SUM(races_filtered) as total_races
+FROM sync_progress
+WHERE sync_session_id LIKE '39b32cd6-551c-460e-8739-beb887b1b446-time-%'
+  AND status = 'completed';
+-- Result: 525 activities, 13 races filtered
+
+-- Verify races in database
+SELECT COUNT(*) FROM races WHERE athlete_id = 48;  -- Florence's athlete_id
+-- Result: 13 races
+
+-- Update parent sync_progress
+UPDATE sync_progress
+SET status = 'completed',
+    current_step = 'completed',
+    total_activities_fetched = 525,
+    races_filtered = 13,
+    completed_at = strftime('%s', 'now')
+WHERE sync_session_id = '39b32cd6-551c-460e-8739-beb887b1b446';
+
+-- Update athlete record
+UPDATE athletes
+SET current_sync_step = 'completed',
+    race_count = 13,
+    total_activities_count = 525,
+    last_synced_at = strftime('%s', 'now'),
+    updated_at = strftime('%s', 'now')
+WHERE id = 48;
+```
+
+**Reset Stale Athlete States:**
+```sql
+UPDATE athletes
+SET current_sync_step = 'idle',
+    updated_at = strftime('%s', 'now')
+WHERE strava_id IN (100119213, 108612856, 3761615);
+-- Changes: 3 rows updated
+```
+
+### Verification Steps
+
+**After Deployment:**
+1. ✅ Refreshed dashboard - Florence's sync now shows "completed"
+2. ✅ Alan and Hannah now show "idle" instead of "queued"
+3. ✅ Jonathan now shows "idle" instead of "checking_existing"
+4. ✅ User confirmed they can trigger manual syncs for all three athletes
+5. ✅ Monitored logs - Ben McKelvey's time-chunked sync (16 chunks) properly finalized
+
+**Log Evidence of Fix Working:**
+```
+[TimeChunkProcessor] Time chunk 1/16 complete. 15 chunks remaining.
+[TimeChunkProcessor] Time chunk 2/16 complete. 14 chunks remaining.
+...
+[TimeChunkProcessor] Time chunk 16/16 complete. 0 chunks remaining.
+[TimeChunkProcessor] Sync 49ed5f84... finalized. Total activities: 149, Total races: 3
+```
+
+Previously would have logged:
+```
+[TimeChunkProcessor] Time chunk 16/16 complete. 16 chunks remaining.  ← BUG!
+```
+
+### Lessons Learned
+
+**Critical Pattern:**
+When implementing finalization logic that depends on counting incomplete work items:
+- ✅ **DO**: Exclude the current work item from the count
+- ❌ **DON'T**: Count all incomplete items including the one currently executing
+
+**Database State Management:**
+- Athlete `current_sync_step` must be updated when syncs complete/fail
+- Parent sync finalization must happen in the LAST chunk, not after all chunks complete
+- Race conditions can occur when status updates happen asynchronously
+
+**Testing Checklist for Chunked Operations:**
+1. [ ] Test with 1 chunk (edge case)
+2. [ ] Test with 2 chunks (minimal multi-chunk)
+3. [ ] Test with 16+ chunks (real-world scenario)
+4. [ ] Verify parent sync finalizes
+5. [ ] Verify athlete state updates to 'completed'/'idle'
+6. [ ] Verify manual sync can be triggered after completion

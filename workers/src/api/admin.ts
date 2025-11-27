@@ -833,7 +833,7 @@ export async function getAdminSyncStatus(request: Request, env: Env): Promise<Re
       error_message: sync.error_message,
     }));
 
-    // Get recently completed syncs
+    // Get recently completed syncs (last 28 days)
     const recentSyncs = await env.DB.prepare(`
       SELECT
         sp.*,
@@ -843,8 +843,8 @@ export async function getAdminSyncStatus(request: Request, env: Env): Promise<Re
       FROM sync_progress sp
       JOIN athletes a ON sp.athlete_id = a.id
       WHERE sp.status IN ('completed', 'error')
+        AND sp.completed_at >= strftime('%s', 'now', '-28 days')
       ORDER BY sp.completed_at DESC
-      LIMIT 10
     `).all();
 
     const recent = (recentSyncs.results || []).map((sync: any) => ({

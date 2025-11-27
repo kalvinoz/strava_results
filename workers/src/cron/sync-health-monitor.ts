@@ -12,8 +12,9 @@ async function cleanupOrphanedSyncProgress(env: Env): Promise<void> {
   console.log('[Health Monitor] Checking for orphaned sync_progress records...');
 
   try {
-    // Find sync_progress records that are stuck in 'running' for more than 1 hour
+    // Find sync_progress records that are stuck in 'running' for more than 3 hours
     // and have no corresponding sync_queue entry
+    // 3 hours allows for large syncs with many queued chunks to complete
     const orphanedSyncs = await env.DB.prepare(`
       SELECT
         sp.id,
@@ -26,7 +27,7 @@ async function cleanupOrphanedSyncProgress(env: Env): Promise<void> {
       FROM sync_progress sp
       LEFT JOIN athletes a ON sp.athlete_id = a.id
       WHERE sp.status = 'running'
-        AND sp.started_at < (strftime('%s', 'now') - 3600)
+        AND sp.started_at < (strftime('%s', 'now') - 10800)
         AND sp.sync_session_id NOT IN (
           SELECT sync_session_id FROM sync_queue
           WHERE status IN ('pending', 'processing')

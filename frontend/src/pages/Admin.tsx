@@ -118,6 +118,7 @@ interface SyncQueueJob {
 
 interface SyncQueueStatus {
   active: SyncQueueJob[];
+  queued: SyncQueueJob[];
   recent: SyncQueueJob[];
 }
 
@@ -239,6 +240,9 @@ export default function Admin() {
   // Sync Dashboard tab state
   const [syncQueueStatus, setSyncQueueStatus] = useState<SyncQueueStatus | null>(null);
   const [loadingSyncStatus, setLoadingSyncStatus] = useState(false);
+  const [recentSyncsPage, setRecentSyncsPage] = useState(0);
+  const [recentSyncsSearch, setRecentSyncsSearch] = useState('');
+  const RECENT_SYNCS_PAGE_SIZE = 25;
 
   // Get admin strava ID from localStorage
   const currentAthleteId = parseInt(
@@ -1114,7 +1118,7 @@ export default function Admin() {
           className={`admin-tab ${activeTab === 'athletes' ? 'active' : ''}`}
           onClick={() => setActiveTab('athletes')}
         >
-          <i className="fa-solid fa-users"></i> Athletes & Sync
+          <i className="fa-solid fa-users"></i> Strava data
         </button>
         <button
           className={`admin-tab ${activeTab === 'parkrun' ? 'active' : ''}`}
@@ -1132,7 +1136,7 @@ export default function Admin() {
           className={`admin-tab ${activeTab === 'review' ? 'active' : ''}`}
           onClick={() => setActiveTab('review')}
         >
-          <i className="fa-solid fa-circle-check"></i> Review
+          <i className="fa-solid fa-circle-check"></i> AI suggestions
         </button>
         <button
           className={`admin-tab ${activeTab === 'submissions' ? 'active' : ''}`}
@@ -1144,13 +1148,13 @@ export default function Admin() {
           className={`admin-tab ${activeTab === 'api-control' ? 'active' : ''}`}
           onClick={() => setActiveTab('api-control')}
         >
-          <i className="fa-solid fa-gear"></i> API Control
+          <i className="fa-solid fa-gear"></i> API commands
         </button>
         <button
           className={`admin-tab ${activeTab === 'sync-dashboard' ? 'active' : ''}`}
           onClick={() => setActiveTab('sync-dashboard')}
         >
-          <i className="fa-solid fa-rotate"></i> Sync Dashboard
+          <i className="fa-solid fa-rotate"></i> Strava sync queue
         </button>
       </div>
 
@@ -2987,10 +2991,10 @@ export default function Admin() {
               {/* Active/Processing Syncs */}
               <div style={{ marginBottom: '3rem' }}>
                 <h3 style={{ marginBottom: '1rem', fontSize: '1.3rem', fontWeight: 600 }}>
-                  <i className="fa-solid fa-rotate"></i> Active Syncs ({syncQueueStatus.active.length})
+                  <i className="fa-solid fa-rotate"></i> Active & Queued Syncs ({syncQueueStatus.active.length + (syncQueueStatus.queued?.length || 0)})
                 </h3>
-                {syncQueueStatus.active.length === 0 ? (
-                  <p style={{ color: '#6b7280', fontStyle: 'italic' }}>No active syncs</p>
+                {syncQueueStatus.active.length === 0 && (!syncQueueStatus.queued || syncQueueStatus.queued.length === 0) ? (
+                  <p style={{ color: '#6b7280', fontStyle: 'italic' }}>No active or queued syncs</p>
                 ) : (
                   <div className="admin-table-container">
                     <table className="admin-table">
@@ -3009,6 +3013,7 @@ export default function Admin() {
                         </tr>
                       </thead>
                       <tbody>
+                        {/* Active syncs */}
                         {syncQueueStatus.active.map((job) => {
                           const startTime = job.started_at ? new Date(job.started_at) : null;
                           const duration = startTime
@@ -3069,6 +3074,48 @@ export default function Admin() {
                             </tr>
                           );
                         })}
+
+                        {/* Queued syncs */}
+                        {syncQueueStatus.queued && syncQueueStatus.queued.map((job: any) => {
+                          const queuedTime = job.queued_at ? new Date(job.queued_at) : null;
+                          const waitDuration = queuedTime
+                            ? Math.floor((Date.now() - queuedTime.getTime()) / 1000)
+                            : null;
+                          const durationText = waitDuration
+                            ? `${Math.floor(waitDuration / 60)}m ${waitDuration % 60}s`
+                            : '-';
+
+                          return (
+                            <tr key={`queued-${job.queue_id}`}>
+                              <td className="number-cell">{job.id ? job.id.substring(0, 8) + '...' : '-'}</td>
+                              <td>
+                                {job.first_name} {job.last_name}
+                              </td>
+                              <td className="strava-link">{job.strava_id}</td>
+                              <td>{job.sync_type}</td>
+                              <td>
+                                <span className="status-badge pending">
+                                  queued
+                                </span>
+                              </td>
+                              <td className="date-cell">
+                                {queuedTime
+                                  ? queuedTime.toLocaleString()
+                                  : '-'}
+                              </td>
+                              <td className="number-cell">{durationText}</td>
+                              <td className="number-cell">
+                                {job.chunk_info || 'Waiting in queue'}
+                              </td>
+                              <td>-</td>
+                              <td>
+                                <span style={{ color: '#6b7280', fontSize: '0.75rem' }}>
+                                  #{job.position} in queue
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -3078,83 +3125,175 @@ export default function Admin() {
               {/* Recent Completed/Failed Syncs */}
               <div>
                 <h3 style={{ marginBottom: '1rem', fontSize: '1.3rem', fontWeight: 600 }}>
-                  <i className="fa-solid fa-chart-column"></i> Recent Syncs (Last 10)
+                  <i className="fa-solid fa-chart-column"></i> Recent Syncs (Last 28 Days)
                 </h3>
-                {syncQueueStatus.recent.length === 0 ? (
-                  <p style={{ color: '#6b7280', fontStyle: 'italic' }}>No recent syncs</p>
-                ) : (
-                  <div className="admin-table-container">
-                    <table className="admin-table">
-                      <thead>
-                        <tr>
-                          <th>Sync ID</th>
-                          <th>Athlete</th>
-                          <th>Strava ID</th>
-                          <th>Type</th>
-                          <th>Status</th>
-                          <th>Started</th>
-                          <th>Completed</th>
-                          <th>Duration</th>
-                          <th>Activities</th>
-                          <th>Races</th>
-                          <th>Error</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {syncQueueStatus.recent.map((job) => {
-                          const startTime = job.started_at ? new Date(job.started_at) : null;
-                          const endTime = job.completed_at ? new Date(job.completed_at) : null;
-                          const duration = startTime && endTime
-                            ? Math.floor((endTime.getTime() - startTime.getTime()) / 1000)
-                            : null;
-                          const durationText = duration
-                            ? `${Math.floor(duration / 60)}m ${duration % 60}s`
-                            : '-';
 
-                          return (
-                            <tr key={job.id}>
-                              <td className="number-cell">{job.id}</td>
-                              <td>
-                                {job.first_name} {job.last_name}
-                              </td>
-                              <td className="strava-link">{job.strava_id}</td>
-                              <td>{job.job_type}</td>
-                              <td>
-                                <span
-                                  className={`status-badge ${job.status === 'completed' ? 'synced' : 'error'}`}
+                {/* Search filter */}
+                <div style={{ marginBottom: '1rem' }}>
+                  <input
+                    type="text"
+                    placeholder="Search by athlete name..."
+                    value={recentSyncsSearch}
+                    onChange={(e) => {
+                      setRecentSyncsSearch(e.target.value);
+                      setRecentSyncsPage(0);
+                    }}
+                    style={{
+                      padding: '0.5rem 1rem',
+                      borderRadius: '6px',
+                      border: '1px solid #d1d5db',
+                      fontSize: '0.875rem',
+                      width: '300px',
+                    }}
+                  />
+                </div>
+
+                {(() => {
+                  // Filter by search
+                  const filteredSyncs = syncQueueStatus.recent.filter((job) => {
+                    const fullName = `${job.first_name} ${job.last_name}`.toLowerCase();
+                    return fullName.includes(recentSyncsSearch.toLowerCase());
+                  });
+
+                  // Paginate
+                  const startIdx = recentSyncsPage * RECENT_SYNCS_PAGE_SIZE;
+                  const endIdx = startIdx + RECENT_SYNCS_PAGE_SIZE;
+                  const paginatedSyncs = filteredSyncs.slice(startIdx, endIdx);
+                  const totalPages = Math.ceil(filteredSyncs.length / RECENT_SYNCS_PAGE_SIZE);
+
+                  return (
+                    <>
+                      {filteredSyncs.length === 0 ? (
+                        <p style={{ color: '#6b7280', fontStyle: 'italic' }}>
+                          {recentSyncsSearch ? 'No syncs match your search' : 'No recent syncs'}
+                        </p>
+                      ) : (
+                        <>
+                          <div className="admin-table-container">
+                            <table className="admin-table">
+                              <thead>
+                                <tr>
+                                  <th>Sync ID</th>
+                                  <th>Athlete</th>
+                                  <th>Strava ID</th>
+                                  <th>Type</th>
+                                  <th>Status</th>
+                                  <th>Started</th>
+                                  <th>Completed</th>
+                                  <th>Duration</th>
+                                  <th>Activities</th>
+                                  <th>Races</th>
+                                  <th>Error</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {paginatedSyncs.map((job) => {
+                                  const startTime = job.started_at ? new Date(job.started_at) : null;
+                                  const endTime = job.completed_at ? new Date(job.completed_at) : null;
+                                  const duration = startTime && endTime
+                                    ? Math.floor((endTime.getTime() - startTime.getTime()) / 1000)
+                                    : null;
+                                  const durationText = duration
+                                    ? `${Math.floor(duration / 60)}m ${duration % 60}s`
+                                    : '-';
+
+                                  return (
+                                    <tr key={job.id}>
+                                      <td className="number-cell">{job.id}</td>
+                                      <td>
+                                        {job.first_name} {job.last_name}
+                                      </td>
+                                      <td className="strava-link">{job.strava_id}</td>
+                                      <td>{job.job_type}</td>
+                                      <td>
+                                        <span
+                                          className={`status-badge ${job.status === 'completed' ? 'synced' : 'error'}`}
+                                        >
+                                          {job.status}
+                                        </span>
+                                      </td>
+                                      <td className="date-cell">
+                                        {startTime
+                                          ? startTime.toLocaleString()
+                                          : '-'}
+                                      </td>
+                                      <td className="date-cell">
+                                        {endTime
+                                          ? endTime.toLocaleString()
+                                          : '-'}
+                                      </td>
+                                      <td className="number-cell">{durationText}</td>
+                                      <td className="number-cell">{job.total_activities_fetched || 0}</td>
+                                      <td className="number-cell" title={`${job.new_races_added || 0} new`}>
+                                        {job.races_filtered || job.new_races_added || 0}
+                                      </td>
+                                      <td>
+                                        {job.error_message && (
+                                          <span style={{ color: '#dc2626', fontSize: '0.85rem' }}>
+                                            {job.error_message}
+                                          </span>
+                                        )}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+
+                          {/* Pagination controls */}
+                          {totalPages > 1 && (
+                            <div style={{
+                              marginTop: '1rem',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              fontSize: '0.875rem',
+                            }}>
+                              <div style={{ color: '#6b7280' }}>
+                                Showing {startIdx + 1}-{Math.min(endIdx, filteredSyncs.length)} of {filteredSyncs.length}
+                              </div>
+                              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                <button
+                                  onClick={() => setRecentSyncsPage(Math.max(0, recentSyncsPage - 1))}
+                                  disabled={recentSyncsPage === 0}
+                                  className="action-button"
+                                  style={{
+                                    padding: '0.5rem 1rem',
+                                    opacity: recentSyncsPage === 0 ? 0.5 : 1,
+                                    cursor: recentSyncsPage === 0 ? 'not-allowed' : 'pointer',
+                                  }}
                                 >
-                                  {job.status}
+                                  <i className="fa-solid fa-chevron-left"></i> Previous
+                                </button>
+                                <span style={{
+                                  padding: '0.5rem 1rem',
+                                  background: 'var(--gray-100)',
+                                  borderRadius: '6px',
+                                  fontWeight: 600,
+                                }}>
+                                  Page {recentSyncsPage + 1} of {totalPages}
                                 </span>
-                              </td>
-                              <td className="date-cell">
-                                {startTime
-                                  ? startTime.toLocaleString()
-                                  : '-'}
-                              </td>
-                              <td className="date-cell">
-                                {endTime
-                                  ? endTime.toLocaleString()
-                                  : '-'}
-                              </td>
-                              <td className="number-cell">{durationText}</td>
-                              <td className="number-cell">{job.total_activities_fetched || 0}</td>
-                              <td className="number-cell" title={`${job.new_races_added || 0} new`}>
-                                {job.races_filtered || job.new_races_added || 0}
-                              </td>
-                              <td>
-                                {job.error_message && (
-                                  <span style={{ color: '#dc2626', fontSize: '0.85rem' }}>
-                                    {job.error_message}
-                                  </span>
-                                )}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+                                <button
+                                  onClick={() => setRecentSyncsPage(Math.min(totalPages - 1, recentSyncsPage + 1))}
+                                  disabled={recentSyncsPage >= totalPages - 1}
+                                  className="action-button"
+                                  style={{
+                                    padding: '0.5rem 1rem',
+                                    opacity: recentSyncsPage >= totalPages - 1 ? 0.5 : 1,
+                                    cursor: recentSyncsPage >= totalPages - 1 ? 'not-allowed' : 'pointer',
+                                  }}
+                                >
+                                  Next <i className="fa-solid fa-chevron-right"></i>
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             </div>
           )}

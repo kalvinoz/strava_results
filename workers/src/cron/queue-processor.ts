@@ -191,11 +191,11 @@ async function processChunkedTimeFetch(
     beforeDate: job.before_date || undefined,
   });
 
-  // Check if all time chunks are complete
+  // Check if all time chunks are complete (excluding current job which is still 'processing')
   const remainingChunks = await env.DB.prepare(
     `SELECT COUNT(*) as count FROM sync_queue
-     WHERE parent_session_id = ? AND sync_type = 'chunked_time_fetch' AND status IN ('pending', 'processing')`
-  ).bind(job.parent_session_id).first<{ count: number }>();
+     WHERE parent_session_id = ? AND sync_type = 'chunked_time_fetch' AND status IN ('pending', 'processing') AND id != ?`
+  ).bind(job.parent_session_id, job.id).first<{ count: number }>();
 
   const remaining = remainingChunks?.count || 0;
   console.log(`[TimeChunkProcessor] Time chunk ${chunkNum}/${job.total_chunks} complete. ${remaining} chunks remaining.`);
@@ -251,7 +251,7 @@ async function processChunkedDetailFetch(
   const { ensureValidToken } = await import('../utils/strava');
 
   // Ensure token is valid
-  await ensureValidToken(env, athlete);
+  await ensureValidToken(athlete, env);
 
   // Fetch detailed data for each race in this chunk
   const detailedActivities: any[] = [];
@@ -278,19 +278,39 @@ async function processChunkedDetailFetch(
 
   console.log(`[DetailChunkProcessor] Fetched ${detailedActivities.length}/${raceIds.length} race details`);
 
-  // Save races from this chunk
-  const { saveRaces } = await import('../sync/rotation-sync');
-  // Note: We need to reconstruct the newRaces array from the activity IDs
-  const newRaces = raceIds.map(id => ({ id }));
-  await saveRaces(env, athlete, job.sync_session_id, newRaces, detailedActivities);
+  // Save races directly to database
+  for (const activity of detailedActivities) {
+    try {
+      await env.DB.prepare(
+        `INSERT OR REPLACE INTO races (
+          athlete_id, strava_activity_id, name, distance, elapsed_time, moving_time,
+          date, elevation_gain, average_heartrate, max_heartrate, polyline, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))`
+      ).bind(
+        athlete.id,
+        activity.id,
+        activity.name,
+        activity.distance,
+        activity.elapsed_time,
+        activity.moving_time,
+        activity.start_date_local.split('T')[0],
+        activity.total_elevation_gain || 0,
+        activity.average_heartrate || null,
+        activity.max_heartrate || null,
+        activity.map?.summary_polyline || null
+      ).run();
+    } catch (error) {
+      console.error(`[DetailChunkProcessor] Error saving race ${activity.id}:`, error);
+    }
+  }
 
   console.log(`[DetailChunkProcessor] Chunk ${chunkNum}/${job.total_chunks} complete`);
 
-  // Check if all detail chunks are complete
+  // Check if all detail chunks are complete (excluding current job which is still 'processing')
   const remainingChunks = await env.DB.prepare(
     `SELECT COUNT(*) as count FROM sync_queue
-     WHERE parent_session_id = ? AND sync_type = 'chunked_detail_fetch' AND status IN ('pending', 'processing')`
-  ).bind(job.parent_session_id).first<{ count: number }>();
+     WHERE parent_session_id = ? AND sync_type = 'chunked_detail_fetch' AND status IN ('pending', 'processing') AND id != ?`
+  ).bind(job.parent_session_id, job.id).first<{ count: number }>();
 
   const remaining = remainingChunks?.count || 0;
   console.log(`[DetailChunkProcessor] Detail chunk ${chunkNum}/${job.total_chunks} complete. ${remaining} chunks remaining.`);
