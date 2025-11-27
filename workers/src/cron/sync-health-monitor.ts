@@ -3,16 +3,96 @@
 
 import { Env } from '../types';
 import { logSyncProgress } from '../utils/sync-logger';
-import { createBatch } from '../utils/batch-manager';
+
+/**
+ * Clean up orphaned sync_progress records that have no corresponding sync_queue entry
+ * These are syncs that were started but never queued or the queue entry was deleted
+ */
+async function cleanupOrphanedSyncProgress(env: Env): Promise<void> {
+  console.log('[Health Monitor] Checking for orphaned sync_progress records...');
+
+  try {
+    // Find sync_progress records that are stuck in 'running' for more than 1 hour
+    // and have no corresponding sync_queue entry
+    const orphanedSyncs = await env.DB.prepare(`
+      SELECT
+        sp.id,
+        sp.sync_session_id,
+        sp.athlete_id,
+        sp.current_step,
+        sp.started_at,
+        a.firstname,
+        a.lastname
+      FROM sync_progress sp
+      LEFT JOIN athletes a ON sp.athlete_id = a.id
+      WHERE sp.status = 'running'
+        AND sp.started_at < (strftime('%s', 'now') - 3600)
+        AND sp.sync_session_id NOT IN (
+          SELECT sync_session_id FROM sync_queue
+          WHERE status IN ('pending', 'processing')
+        )
+    `).all<{
+      id: number;
+      sync_session_id: string;
+      athlete_id: number;
+      current_step: string;
+      started_at: number;
+      firstname: string;
+      lastname: string;
+    }>();
+
+    if (!orphanedSyncs.results || orphanedSyncs.results.length === 0) {
+      console.log('[Health Monitor] No orphaned sync_progress records found');
+      return;
+    }
+
+    console.log(`[Health Monitor] Found ${orphanedSyncs.results.length} orphaned sync_progress record(s)`);
+
+    // Mark each orphaned sync as error
+    for (const sync of orphanedSyncs.results) {
+      const hoursStuck = Math.floor((Date.now() / 1000 - sync.started_at) / 3600);
+      console.log(`[Health Monitor] Marking orphaned sync ${sync.sync_session_id} as error (${sync.firstname} ${sync.lastname}, stuck for ${hoursStuck}h at step: ${sync.current_step})`);
+
+      await env.DB.prepare(
+        `UPDATE sync_progress
+         SET status = 'error',
+             error_message = ?,
+             error_step = current_step,
+             completed_at = strftime('%s', 'now')
+         WHERE id = ?`
+      )
+        .bind(
+          `Orphaned sync - stuck in '${sync.current_step}' for ${hoursStuck}h with no corresponding queue entry. Auto-fixed by health monitor.`,
+          sync.id
+        )
+        .run();
+
+      await logSyncProgress(env, sync.athlete_id, sync.sync_session_id, 'error',
+        `Health monitor detected orphaned sync - no queue entry found after ${hoursStuck}h`,
+        { hoursStuck, stuckAtStep: sync.current_step, auto_fixed: true }
+      );
+    }
+
+    console.log(`[Health Monitor] Fixed ${orphanedSyncs.results.length} orphaned sync_progress record(s)`);
+
+  } catch (error) {
+    console.error('[Health Monitor] Error cleaning up orphaned syncs:', error);
+  }
+}
 
 /**
  * Health check for batched sync sessions
  * Runs periodically to detect and fix stalled enrichment syncs
+ * and orphaned sync_progress records
  */
 export async function healthCheckBatchedSyncs(env: Env): Promise<void> {
   console.log('[Health Monitor] Checking batched sync health...');
 
   try {
+    // FIRST: Check for orphaned sync_progress records (no corresponding sync_queue entry)
+    // These are syncs that were started but never queued or the queue entry was deleted
+    await cleanupOrphanedSyncProgress(env);
+
     // Find all in-progress enrichment sessions
     const inProgressSyncs = await env.DB.prepare(`
       SELECT DISTINCT

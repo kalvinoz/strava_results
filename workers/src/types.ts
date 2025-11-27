@@ -28,6 +28,11 @@ export interface Athlete {
   last_sync_type?: 'auto' | 'manual';
   sync_status?: string;
   sync_error?: string;
+  total_activities_count?: number;
+  race_count?: number;
+  current_batch_number?: number;
+  total_batches_expected?: number;
+  sync_session_id?: string;
 }
 
 export interface Race {

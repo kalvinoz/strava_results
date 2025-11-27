@@ -19,8 +19,6 @@ import { handleRawResponseBackfill } from './api/raw-response-backfill';
 import { extractActivities, submitActivities, getManualSubmissions, updateSubmission, approveSubmission, rejectSubmission, deleteSubmission } from './api/manual-submissions';
 import { googleLogin, googleCallback, logout, getCurrentAdmin } from './api/google-auth';
 import {
-  processNextQueuedJob,
-  createSyncJob,
   queueAllAthletes,
   getQueueStats,
   cleanupOldJobs,
@@ -528,20 +526,7 @@ export default {
         });
       }
 
-      // Queue specific athlete for sync
-      const queueAthleteMatch = path.match(/^\/api\/queue\/athletes\/(\d+)$/);
-      if (queueAthleteMatch && request.method === 'POST') {
-        const athleteId = parseInt(queueAthleteMatch[1]);
-        const body = await request.json() as { jobType?: 'full_sync' | 'incremental_sync'; priority?: number };
-        const jobId = await createSyncJob(env, athleteId, body.jobType || 'full_sync', body.priority || 0);
-        return new Response(JSON.stringify({
-          message: `Queued athlete ${athleteId}`,
-          jobId,
-        }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-        });
-      }
+      // Queue specific athlete for sync is now handled by triggerAthleteSync in admin.ts
 
       // Clean up old jobs
       if (path === '/api/queue/cleanup' && request.method === 'POST') {
@@ -654,10 +639,9 @@ export default {
 
   /**
    * Handle scheduled cron triggers
-   * Three cron schedules:
+   * Two cron schedules:
    * 1. Weekly (Monday 2 AM UTC) - Queue all athletes for sync
-   * 2. Every 2 minutes - Process next pending sync job from queue (legacy)
-   * 3. WOOD-8: Every minute - Process pending batches
+   * 2. Every minute - Process sync queue + batches + health check
    */
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     console.log('Cron trigger fired:', event.cron, new Date(event.scheduledTime).toISOString());
@@ -673,11 +657,6 @@ export default {
         // Also clean up old completed jobs
         const deleted = await cleanupOldJobs(env);
         console.log(`Cleaned up ${deleted} old queue jobs`);
-
-      } else if (event.cron === '*/2 * * * *') {
-        // Queue processor: Process next pending job (legacy)
-        console.log('Queue processor cron: Processing next pending job...');
-        await processNextQueuedJob(env, ctx);
 
       } else if (event.cron === '* * * * *') {
         // Every minute: Process sync queue + batches + health check

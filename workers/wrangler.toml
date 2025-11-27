@@ -18,13 +18,11 @@ binding = "AI"
 
 # Scheduled cron triggers
 # 1. Weekly full sync trigger (Monday 2 AM UTC) - queues all athletes for sync
-# 2. Queue processor (every 2 minutes) - processes pending sync jobs (legacy)
-# 3. WOOD-8: Batch processor (every minute) - processes pending batches
+# 2. Every minute - Process sync queue + batches + health check
 [triggers]
 crons = [
   "0 2 * * 1",  # Weekly: Queue all athletes for sync (Monday 2 AM UTC)
-  "*/2 * * * *", # Queue processor: Every 2 minutes (legacy)
-  "* * * * *"   # WOOD-8: Batch processor: Every minute
+  "* * * * *"   # Every minute: Process sync queue + batches + health check
 ]
 
 # Environment variables (secrets set via wrangler secret put)

@@ -231,72 +231,13 @@ async function processChunkedTimeFetch(
 
 /**
  * Process a race detail chunk job (fetch details for a batch of races)
+ * NOTE: Chunk processing is no longer used - keeping for backward compatibility
  */
 async function processChunkedDetailFetch(
   env: Env,
   job: SyncQueueJob,
   athlete: any
 ): Promise<void> {
-  const chunkNum = (job.chunk_index || 0) + 1;
-  console.log(`[DetailChunkProcessor] Processing detail chunk ${chunkNum}/${job.total_chunks} for sync ${job.parent_session_id}`);
-
-  const raceIds: number[] = JSON.parse(job.race_ids || '[]');
-  if (raceIds.length === 0) {
-    console.warn(`[DetailChunkProcessor] Chunk ${job.id} has no race IDs`);
-    return;
-  }
-
-  const { ensureValidToken } = await import('../sync/rotation-sync');
-  const accessToken = await ensureValidToken(athlete, env);
-  const detailedActivities = new Map<number, any>();
-
-  for (const raceId of raceIds) {
-    try {
-      const response = await fetch(`https://www.strava.com/api/v3/activities/${raceId}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (response.ok) {
-        detailedActivities.set(raceId, await response.json());
-      }
-    } catch (error) {
-      console.error(`[DetailChunkProcessor] Error fetching race ${raceId}:`, error);
-    }
-  }
-
-  const { saveRaceFromDetailed } = await import('../utils/db');
-  for (const [raceId, detailed] of detailedActivities) {
-    try {
-      await saveRaceFromDetailed(env, athlete.id, detailed);
-    } catch (error) {
-      console.error(`[DetailChunkProcessor] Error saving race ${raceId}:`, error);
-    }
-  }
-
-  const remainingChunks = await env.DB.prepare(
-    `SELECT COUNT(*) as count FROM sync_queue
-     WHERE parent_session_id = ? AND sync_type = 'chunked_detail_fetch' AND status IN ('pending', 'processing')`
-  ).bind(job.parent_session_id).first<{ count: number }>();
-
-  const remaining = remainingChunks?.count || 0;
-  console.log(`[DetailChunkProcessor] Detail chunk ${chunkNum}/${job.total_chunks} complete. ${remaining} chunks remaining.`);
-
-  if (remaining === 0) {
-    const raceCountResult = await env.DB.prepare(
-      'SELECT COUNT(*) as count FROM races WHERE athlete_id = ?'
-    ).bind(athlete.id).first<{ count: number }>();
-    const totalRaceCount = raceCountResult?.count || 0;
-    const completedAt = Math.floor(Date.now() / 1000);
-
-    await env.DB.prepare(
-      `UPDATE sync_progress SET status = 'completed', current_step = 'completed', completed_at = ?
-       WHERE sync_session_id = ?`
-    ).bind(completedAt, job.parent_session_id).run();
-
-    await env.DB.prepare(
-      `UPDATE athletes SET current_sync_step = 'completed', last_synced_at = ?, race_count = ?, updated_at = ?
-       WHERE id = ?`
-    ).bind(completedAt, totalRaceCount, completedAt, athlete.id).run();
-
-    console.log(`[DetailChunkProcessor] Sync ${job.parent_session_id} finalized. Total races: ${totalRaceCount}`);
-  }
+  console.warn(`[DetailChunkProcessor] Chunked detail fetch is deprecated - marking job ${job.id} as failed`);
+  throw new Error('Chunked detail fetch is no longer supported');
 }

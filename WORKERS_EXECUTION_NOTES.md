@@ -510,3 +510,76 @@ ALTER TABLE sync_queue ADD COLUMN parent_session_id TEXT; -- Links chunks to mai
 
 ### Next Test
 Trigger manual sync for Nelson Santos to verify chunking works with 3200+ activities.
+
+## ❌ Problem: Orphaned sync_progress Records Showing as "Running" (2025-11-27)
+
+### Issue Discovered (2025-11-27)
+Dashboard showed 6 syncs stuck in "running" status for 20+ hours, but:
+- No corresponding `sync_queue` entries (jobs were never queued or deleted)
+- sync_progress records were stuck in status='running', current_step='fetching_activities'
+- Created on 2025-11-26 06:25 (stuck for ~20 hours)
+
+**Root Cause:**
+- **Two queue systems were running simultaneously**:
+  - OLD: `queue/queue-processor.ts` with cron `*/2 * * * *` (every 2 minutes)
+  - NEW: `cron/queue-processor.ts` with cron `* * * * *` (every minute)
+- Both tried to use the same `sync_queue` table but with **different schemas**
+- Production database used the NEW schema (with `sync_type`, `attempts`, `max_attempts`)
+- The OLD system would fail to work with the new schema
+- Some syncs created `sync_progress` records but never created corresponding `sync_queue` entries
+- Health monitor only checked for "enrich_*" sessions, not regular sync sessions
+
+### Why Dashboard Showed Syncs as "Running"
+1. `sync_progress` table had 6 records with status='running' (created yesterday)
+2. No corresponding `sync_queue` entries existed (never queued or deleted)
+3. Health monitor (`sync-health-monitor.ts`) only checked for sessions starting with "enrich_*"
+4. Regular sync sessions were orphaned with no cleanup mechanism
+
+## ✅ Solution: Orphaned Record Cleanup + Remove Duplicate Queue System
+
+### Immediate Fix (2025-11-27)
+1. **Manual cleanup**: Marked 6 orphaned sync_progress records as 'error' with explanatory message
+   ```sql
+   UPDATE sync_progress
+   SET status = 'error',
+       error_message = 'Orphaned sync - no corresponding queue entry found',
+       completed_at = strftime('%s', 'now')
+   WHERE status = 'running'
+     AND started_at < (strftime('%s', 'now') - 3600)
+     AND sync_session_id NOT IN (
+       SELECT sync_session_id FROM sync_queue
+       WHERE status IN ('pending', 'processing')
+     )
+   ```
+   **Result**: Fixed 6 orphaned records immediately
+
+2. **Updated health monitor** (`sync-health-monitor.ts`):
+   - Added `cleanupOrphanedSyncProgress()` function
+   - Automatically detects sync_progress records stuck in 'running' for >1 hour with no queue entry
+   - Marks them as 'error' with explanatory message
+   - Logs details (athlete name, time stuck, step)
+   - Runs every minute as part of health check
+
+3. **Removed duplicate queue system**:
+   - Removed OLD cron trigger `*/2 * * * *` from `wrangler.toml`
+   - Removed call to `processNextQueuedJob` from `index.ts`
+   - Removed `createSyncJob` import and usage
+   - Updated cron comments to reflect only 2 schedules:
+     - `0 2 * * 1`: Weekly queue all athletes (Monday 2 AM UTC)
+     - `* * * * *`: Process sync queue + batches + health check (every minute)
+
+4. **Fixed TypeScript types**:
+   - Added missing fields to `Athlete` interface: `total_activities_count`, `race_count`, `current_batch_number`, `total_batches_expected`, `sync_session_id`
+   - Simplified `processChunkedDetailFetch()` to throw error (deprecated functionality)
+
+### Benefits
+✅ **Automatic orphan detection**: Health monitor finds and fixes stuck syncs every minute
+✅ **Single queue system**: No conflicts between OLD and NEW queue processors
+✅ **Clean cron setup**: Only 2 cron schedules, clearly documented
+✅ **Dashboard accuracy**: No more false "running" statuses
+
+### Deployed (2025-11-27)
+- Worker Version: `66351a2a-745f-4d09-ae47-c5ce9ceca6ea`
+- Health monitor now runs every minute
+- Orphaned sync cleanup is automatic
+- Old queue system fully removed
