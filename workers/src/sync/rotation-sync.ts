@@ -559,7 +559,7 @@ export async function syncAthlete(
     // This is critical because the stored total_activities_count may be outdated or missing
     let actualActivityCount = athlete.total_activities_count || 0;
     try {
-      await ensureValidToken(env, athlete);
+      await ensureValidToken(athlete, env);
       const statsResponse = await fetch(
         `https://www.strava.com/api/v3/athletes/${athlete.strava_id}/stats`,
         {
