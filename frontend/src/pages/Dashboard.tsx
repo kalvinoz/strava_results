@@ -488,6 +488,7 @@ export default function Dashboard() {
                       onClick={() => {
                         setIsEditMode(false);
                         fetchRaces(); // Refresh to save all changes
+                        fetchAllFilteredRaces();
                       }}
                       className="button button-secondary"
                       style={{
@@ -507,6 +508,7 @@ export default function Dashboard() {
                       onClick={() => {
                         setIsEditMode(false);
                         fetchRaces(); // Refresh to discard changes
+                        fetchAllFilteredRaces();
                       }}
                       className="button button-secondary"
                       style={{
@@ -543,10 +545,14 @@ export default function Dashboard() {
               races={races}
               currentAthleteId={currentAthleteId}
               isAdmin={isAdmin}
-              onTimeUpdate={fetchRaces}
+              onTimeUpdate={() => {
+                fetchRaces();
+                fetchAllFilteredRaces();
+              }}
               availableEvents={availableEvents}
               onEventUpdate={() => {
                 fetchRaces();
+                fetchAllFilteredRaces();
                 fetchAvailableEvents();
               }}
               isEditMode={isEditMode}
