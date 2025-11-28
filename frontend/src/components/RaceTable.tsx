@@ -217,8 +217,12 @@ function EditableTime({ race, isOwner, isEditMode, onSave }: EditableTimeProps) 
   }, [isEditMode, isOwner, displayTime]);
 
   const handleSave = async () => {
-    if (!hasUnsavedChanges) return;
+    if (!hasUnsavedChanges) {
+      console.log(`[EditableTime] No unsaved changes for race ${race.id}`);
+      return;
+    }
 
+    console.log(`[EditableTime] Saving time for race ${race.id}: ${editValue}`);
     setIsSaving(true);
     try {
       // Parse the time string (HH:MM:SS or MM:SS)
@@ -231,12 +235,16 @@ function EditableTime({ race, isOwner, isEditMode, onSave }: EditableTimeProps) 
         seconds = parts[0] * 60 + parts[1];
       } else {
         alert('Invalid time format. Use MM:SS or HH:MM:SS');
+        setIsSaving(false);
         return;
       }
 
+      console.log(`[EditableTime] Parsed time: ${seconds} seconds`);
       await onSave(race.id, seconds);
       setHasUnsavedChanges(false);
+      console.log(`[EditableTime] Save successful for race ${race.id}`);
     } catch (error) {
+      console.error(`[EditableTime] Save failed for race ${race.id}:`, error);
       alert('Failed to update time');
     } finally {
       setIsSaving(false);
@@ -258,16 +266,19 @@ function EditableTime({ race, isOwner, isEditMode, onSave }: EditableTimeProps) 
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    console.log(`[EditableTime] Value changed for race ${race.id}: ${e.target.value}`);
     setEditValue(e.target.value);
     setHasUnsavedChanges(true);
   };
 
   // Auto-save when exiting edit mode
   useEffect(() => {
+    console.log(`[EditableTime] Edit mode changed for race ${race.id}: isEditMode=${isEditMode}, hasUnsavedChanges=${hasUnsavedChanges}, isOwner=${isOwner}`);
     if (!isEditMode && hasUnsavedChanges && isOwner) {
+      console.log(`[EditableTime] Triggering auto-save for race ${race.id}`);
       handleSave();
     }
-  }, [isEditMode]);
+  }, [isEditMode, hasUnsavedChanges, isOwner]);
 
   if (isEditMode && isOwner) {
     return (
