@@ -40,7 +40,7 @@ interface AthleteStat {
 export default function AthleteSummary({ races, selectedAthletes = [], onAthleteToggle }: AthleteSummaryProps) {
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(20);
-  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [isCollapsed, setIsCollapsed] = useState(true);
 
   // Filter out hidden races before calculating statistics
   const visibleRaces = races.filter(race => !race.is_hidden);
@@ -130,11 +130,9 @@ export default function AthleteSummary({ races, selectedAthletes = [], onAthlete
   return (
     <div className="athlete-summary">
       <div className="summary-header">
-        <h2 className="summary-title" onClick={() => setIsCollapsed(!isCollapsed)} style={{ cursor: 'pointer', userSelect: 'none' }}>
-          <span style={{ marginRight: '0.5rem' }}>
-            {isCollapsed ? <i className="fa-solid fa-chevron-right"></i> : <i className="fa-solid fa-chevron-down"></i>}
-          </span>
-          Runners
+        <h2 className="summary-title" onClick={() => setIsCollapsed(!isCollapsed)} style={{ cursor: 'pointer', userSelect: 'none', fontSize: '1.125rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          {isCollapsed ? <i className="fa-solid fa-chevron-right"></i> : <i className="fa-solid fa-chevron-down"></i>}
+          <span>Runners</span>
         </h2>
         {!isCollapsed && (
           <div className="summary-controls">

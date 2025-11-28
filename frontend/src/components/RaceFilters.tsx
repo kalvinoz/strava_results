@@ -114,7 +114,10 @@ export default function RaceFilters({
   return (
     <div className="race-filters">
       <div className="filters-header" onClick={() => setIsExpanded(!isExpanded)}>
-        <div className="filters-header-content">
+        <div className="filters-header-content" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1 }}>
+          <span className="filters-toggle" style={{ display: 'flex', alignItems: 'center' }}>
+            {isExpanded ? <i className="fa-solid fa-chevron-down"></i> : <i className="fa-solid fa-chevron-right"></i>}
+          </span>
           <h3 className="filters-title">Filters</h3>
           {!isExpanded && activeFilters.length > 0 && (
             <div className="active-filters-pills">
@@ -127,9 +130,6 @@ export default function RaceFilters({
             </div>
           )}
         </div>
-        <button className="filters-toggle" type="button" aria-label={isExpanded ? 'Collapse filters' : 'Expand filters'}>
-          {isExpanded ? <i className="fa-solid fa-chevron-down"></i> : <i className="fa-solid fa-chevron-right"></i>}
-        </button>
       </div>
 
       {isExpanded && (

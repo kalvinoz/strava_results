@@ -362,15 +362,6 @@ export default function Dashboard() {
           <p className="subtitle">View and filter race activities (public activities tagged as a race on Strava) from all club members</p>
         </div>
 
-        <RaceFilters
-          filters={filters}
-          onFilterChange={handleFilterChange}
-          onClearFilters={handleClearFilters}
-          earliestDate={earliestDate}
-          availableAthletes={availableAthletes}
-          availableEvents={availableEvents}
-        />
-
         {loading ? (
           <div className="loading">
             <div className="spinner"></div>
@@ -394,6 +385,15 @@ export default function Dashboard() {
               races={allFilteredRaces}
               selectedAthletes={filters.athletes}
               onAthleteToggle={handleAthleteToggle}
+            />
+
+            <RaceFilters
+              filters={filters}
+              onFilterChange={handleFilterChange}
+              onClearFilters={handleClearFilters}
+              earliestDate={earliestDate}
+              availableAthletes={availableAthletes}
+              availableEvents={availableEvents}
             />
 
             <div className="results-header">
