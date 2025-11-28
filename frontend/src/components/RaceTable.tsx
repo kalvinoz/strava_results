@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { FaEye, FaEyeSlash, FaUserPen } from 'react-icons/fa6';
 import { FaCommentDots, FaRegCommentDots } from 'react-icons/fa6';
 import './RaceTable.css';
@@ -209,11 +209,14 @@ function EditableTime({ race, isOwner, isEditMode, onSave }: EditableTimeProps) 
   const hasManualTime = race.manual_time !== null && race.manual_time !== undefined;
 
   // Initialize edit value when entering edit mode
+  const prevIsEditModeRef = useRef(isEditMode);
   useEffect(() => {
-    if (isEditMode && isOwner) {
+    if (isEditMode && isOwner && !prevIsEditModeRef.current) {
+      // Only reset when entering edit mode (transitioning from false to true)
       setEditValue(formatTime(displayTime));
       setHasUnsavedChanges(false);
     }
+    prevIsEditModeRef.current = isEditMode;
   }, [isEditMode, isOwner, displayTime]);
 
   const handleSave = async () => {
@@ -327,11 +330,14 @@ function EditableDistance({ race, isOwner, isEditMode, onSave }: EditableDistanc
   const hasManualDistance = race.manual_distance !== null && race.manual_distance !== undefined;
 
   // Initialize edit value when entering edit mode
+  const prevIsEditModeRefDist = useRef(isEditMode);
   useEffect(() => {
-    if (isEditMode && isOwner) {
+    if (isEditMode && isOwner && !prevIsEditModeRefDist.current) {
+      // Only reset when entering edit mode (transitioning from false to true)
       setEditValue((displayDistance / 1000).toFixed(2));
       setHasUnsavedChanges(false);
     }
+    prevIsEditModeRefDist.current = isEditMode;
   }, [isEditMode, isOwner, displayDistance]);
 
   const handleSave = async () => {
