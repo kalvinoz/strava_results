@@ -122,7 +122,7 @@ interface SyncQueueStatus {
   recent: SyncQueueJob[];
 }
 
-type SortField = 'name' | 'activities' | 'races' | 'runs';
+type SortField = 'name' | 'strava_id' | 'activities' | 'races' | 'runs';
 type SortDirection = 'asc' | 'desc';
 
 type ParkrunSortField = 'name' | 'runs' | 'events';
@@ -1042,6 +1042,9 @@ export default function Admin() {
       case 'name':
         comparison = `${a.firstname} ${a.lastname}`.localeCompare(`${b.firstname} ${b.lastname}`);
         break;
+      case 'strava_id':
+        comparison = a.strava_id - b.strava_id;
+        break;
       case 'activities':
         comparison = a.total_activities_count - b.total_activities_count;
         break;
@@ -1279,7 +1282,9 @@ export default function Admin() {
               <th onClick={() => handleSort('name')} style={{ cursor: 'pointer' }}>
                 Athlete {getSortIcon('name', sortField, sortDirection)}
               </th>
-              <th>Strava ID</th>
+              <th onClick={() => handleSort('strava_id')} style={{ cursor: 'pointer' }}>
+                Strava ID {getSortIcon('strava_id', sortField, sortDirection)}
+              </th>
               <th>Sync Status</th>
               <th>Last Sync</th>
               <th>Next Sync</th>

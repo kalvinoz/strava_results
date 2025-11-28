@@ -131,7 +131,9 @@ export default function AthleteSummary({ races, selectedAthletes = [], onAthlete
     <div className="athlete-summary">
       <div className="summary-header">
         <h2 className="summary-title" onClick={() => setIsCollapsed(!isCollapsed)} style={{ cursor: 'pointer', userSelect: 'none' }}>
-          <span style={{ marginRight: '0.5rem' }}>{isCollapsed ? '▶' : '▼'}</span>
+          <span style={{ marginRight: '0.5rem' }}>
+            {isCollapsed ? <i className="fa-solid fa-chevron-right"></i> : <i className="fa-solid fa-chevron-down"></i>}
+          </span>
           Runners
         </h2>
         {!isCollapsed && (

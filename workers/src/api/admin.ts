@@ -83,22 +83,41 @@ export async function getAdminAthletes(request: Request, env: Env): Promise<Resp
       ).all();
     }
 
-    // Calculate next sync time for each athlete
-    // Simple formula: distribute athletes evenly across 7 days
-    const totalAthletes = result.results.length;
-    const SYNC_INTERVAL_DAYS = 7;
-    const secondsPerAthlete = (SYNC_INTERVAL_DAYS * 24 * 60 * 60) / Math.max(totalAthletes, 1);
-
+    // Calculate next sync time for each athlete based on daily rotation
+    // Athletes are synced in order of last_synced_at (oldest first)
+    // One athlete per hour = 24 athletes per day
     const athletesWithProgress = [];
     const nowSeconds = Math.floor(Date.now() / 1000);
+    const ONE_DAY_SECONDS = 24 * 60 * 60;
+    const ONE_HOUR_SECONDS = 60 * 60;
+
+    // Sort athletes by last_synced_at to determine rotation order
+    const athletesByRotation = [...result.results].sort((a: any, b: any) => {
+      const aLastSync = a.last_synced_at || 0;
+      const bLastSync = b.last_synced_at || 0;
+      return aLastSync - bLastSync; // Oldest first
+    });
 
     for (let i = 0; i < result.results.length; i++) {
       const athlete: any = result.results[i];
       const athleteData: any = { ...athlete };
 
-      // Calculate next scheduled sync time
-      // Stagger athletes evenly across 7-day rotation period
-      athleteData.next_sync_at = nowSeconds + (i * secondsPerAthlete);
+      // Find this athlete's position in the rotation queue
+      const rotationPosition = athletesByRotation.findIndex((a: any) => a.id === athlete.id);
+
+      // Calculate next sync time based on rotation position
+      // Each athlete syncs once per day (24 hours after their last sync)
+      // If they haven't been synced in 24+ hours, they're due soon
+      const lastSync = athlete.last_synced_at || 0;
+      const timeSinceLastSync = nowSeconds - lastSync;
+
+      if (timeSinceLastSync >= ONE_DAY_SECONDS) {
+        // Overdue - will be synced in next (rotationPosition) hours
+        athleteData.next_sync_at = nowSeconds + (rotationPosition * ONE_HOUR_SECONDS);
+      } else {
+        // Not yet due - next sync is 24 hours after last sync
+        athleteData.next_sync_at = lastSync + ONE_DAY_SECONDS;
+      }
 
       // Check if there's a pending/processing sync in the queue
       try {
