@@ -388,6 +388,7 @@ export async function updateRaceTime(
 ): Promise<Response> {
   try {
     const body = await request.json() as { manual_time: number | null; athlete_strava_id: number };
+    console.log(`[updateRaceTime] Received request for raceId=${raceId}`, body);
 
     // Verify the athlete owns this race
     const race = await env.DB.prepare(
@@ -399,7 +400,10 @@ export async function updateRaceTime(
       .bind(raceId)
       .first<{ athlete_id: number; strava_activity_id: number; strava_id: number }>();
 
+    console.log(`[updateRaceTime] Race lookup result:`, race);
+
     if (!race) {
+      console.log(`[updateRaceTime] Race ${raceId} not found`);
       return new Response(
         JSON.stringify({ error: 'Race not found' }),
         {
@@ -415,9 +419,11 @@ export async function updateRaceTime(
     ).bind(body.athlete_strava_id).first<{ is_admin: number }>();
 
     const isAdmin = requestingAthlete?.is_admin === 1;
+    console.log(`[updateRaceTime] Requesting athlete isAdmin=${isAdmin}, race.strava_id=${race.strava_id}, body.athlete_strava_id=${body.athlete_strava_id}`);
 
     // Verify athlete owns this race OR is an admin
     if (!isAdmin && race.strava_id !== body.athlete_strava_id) {
+      console.log(`[updateRaceTime] Unauthorized: athlete ${body.athlete_strava_id} cannot edit race owned by ${race.strava_id}`);
       return new Response(
         JSON.stringify({ error: 'Unauthorized: You can only edit your own race times' }),
         {
@@ -430,6 +436,7 @@ export async function updateRaceTime(
     // Insert or update race_edits table
     if (body.manual_time === null) {
       // Remove the edit (revert to original)
+      console.log(`[updateRaceTime] Deleting edit for strava_activity_id=${race.strava_activity_id}, athlete_id=${race.athlete_id}`);
       await env.DB.prepare(
         `DELETE FROM race_edits WHERE strava_activity_id = ? AND athlete_id = ?`
       )
@@ -444,7 +451,8 @@ export async function updateRaceTime(
         .run();
     } else {
       // Upsert the manual time
-      await env.DB.prepare(
+      console.log(`[updateRaceTime] Upserting manual_time=${body.manual_time} for strava_activity_id=${race.strava_activity_id}, athlete_id=${race.athlete_id}`);
+      const result = await env.DB.prepare(
         `INSERT INTO race_edits (strava_activity_id, athlete_id, manual_time, edited_at)
          VALUES (?, ?, ?, strftime('%s', 'now'))
          ON CONFLICT(strava_activity_id, athlete_id)
@@ -452,7 +460,10 @@ export async function updateRaceTime(
       )
         .bind(race.strava_activity_id, race.athlete_id, body.manual_time)
         .run();
+      console.log(`[updateRaceTime] Upsert result:`, result);
     }
+
+    console.log(`[updateRaceTime] Successfully updated race ${raceId}`);
 
     return new Response(
       JSON.stringify({ success: true }),

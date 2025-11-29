@@ -738,22 +738,32 @@ export default function RaceTable({ races, currentAthleteId, isAdmin = false, on
   };
 
   const handleTimeUpdate = async (raceId: number, newTime: number | null) => {
+    console.log(`[handleTimeUpdate] Called with raceId=${raceId}, newTime=${newTime}, currentAthleteId=${currentAthleteId}`);
     try {
+      const requestBody = {
+        manual_time: newTime,
+        athlete_strava_id: currentAthleteId,
+      };
+      console.log(`[handleTimeUpdate] Sending PATCH request to /api/races/${raceId}/time`, requestBody);
+
       const response = await fetch(`/api/races/${raceId}/time`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          manual_time: newTime,
-          athlete_strava_id: currentAthleteId,
-        }),
+        body: JSON.stringify(requestBody),
       });
+
+      console.log(`[handleTimeUpdate] Response status: ${response.status}`);
 
       if (!response.ok) {
         const error = await response.json();
+        console.error(`[handleTimeUpdate] API error:`, error);
         throw new Error(error.error || 'Failed to update time');
       }
+
+      const result = await response.json();
+      console.log(`[handleTimeUpdate] API response:`, result);
 
       // Refresh the races list
       if (onTimeUpdate) {
