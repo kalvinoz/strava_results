@@ -31,24 +31,7 @@ export default function ParkrunWeeklySummary() {
   const [loading, setLoading] = useState(true);
   const [showCalendar, setShowCalendar] = useState(false);
   const [currentMonth, setCurrentMonth] = useState(new Date());
-  const [isAdmin, setIsAdmin] = useState(false);
   const [milestones, setMilestones] = useState<MilestoneData | null>(null);
-
-  // Check admin status on mount
-  useEffect(() => {
-    const checkAdminStatus = async () => {
-      const stravaId = localStorage.getItem('strava_athlete_id');
-      if (stravaId) {
-        try {
-          const response = await fetch(`/api/admin/athletes?admin_strava_id=${stravaId}`);
-          setIsAdmin(response.ok);
-        } catch {
-          setIsAdmin(false);
-        }
-      }
-    };
-    checkAdminStatus();
-  }, []);
 
   useEffect(() => {
     fetchSummary(selectedDate);
@@ -305,8 +288,8 @@ export default function ParkrunWeeklySummary() {
         )}
       </div>
 
-      {/* Milestones section - admin only */}
-      {isAdmin && milestones && (
+      {/* Milestones section */}
+      {milestones && (
         <div className="milestones-section">
           <h3><i className="fa-solid fa-medal"></i> Milestones</h3>
 

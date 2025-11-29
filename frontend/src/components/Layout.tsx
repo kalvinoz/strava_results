@@ -5,11 +5,14 @@ import './Layout.css';
 export default function Layout() {
   const location = useLocation();
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isSignedIn, setIsSignedIn] = useState(false);
 
   useEffect(() => {
-    // Check if current user is an admin
-    const checkAdmin = async () => {
+    // Check if current user is signed in and if they're an admin
+    const checkAuth = async () => {
       const athleteId = localStorage.getItem('strava_athlete_id');
+      setIsSignedIn(!!athleteId);
+
       if (!athleteId) return;
 
       try {
@@ -22,7 +25,7 @@ export default function Layout() {
       }
     };
 
-    checkAdmin();
+    checkAuth();
   }, []);
 
   return (
@@ -41,24 +44,28 @@ export default function Layout() {
               >
                 Home
               </Link>
-              <Link
-                to="/dashboard"
-                className={`nav-link ${location.pathname === '/dashboard' || location.pathname === '/races' ? 'active' : ''}`}
-              >
-                Races
-              </Link>
-              <Link
-                to="/parkrun"
-                className={`nav-link ${location.pathname === '/parkrun' ? 'active' : ''}`}
-              >
-                Parkrun
-              </Link>
-              <Link
-                to="/heatmap"
-                className={`nav-link ${location.pathname === '/heatmap' ? 'active' : ''}`}
-              >
-                Heatmap
-              </Link>
+              {isSignedIn && (
+                <>
+                  <Link
+                    to="/dashboard"
+                    className={`nav-link ${location.pathname === '/dashboard' || location.pathname === '/races' ? 'active' : ''}`}
+                  >
+                    Races
+                  </Link>
+                  <Link
+                    to="/parkrun"
+                    className={`nav-link ${location.pathname === '/parkrun' ? 'active' : ''}`}
+                  >
+                    Parkrun
+                  </Link>
+                  <Link
+                    to="/heatmap"
+                    className={`nav-link ${location.pathname === '/heatmap' ? 'active' : ''}`}
+                  >
+                    Heatmap
+                  </Link>
+                </>
+              )}
               {isAdmin && (
                 <Link
                   to="/admin"
