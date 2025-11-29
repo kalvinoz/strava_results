@@ -306,7 +306,7 @@ export default function ParkrunWeeklySummary() {
       </div>
 
       {/* Milestones section - admin only */}
-      {isAdmin && milestones && (
+      {milestones && (
         <div className="milestones-section">
           <h3><i className="fa-solid fa-medal"></i> Milestones</h3>
 
