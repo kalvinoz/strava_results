@@ -310,6 +310,47 @@ export async function importIndividualParkrunCSV(request: Request, env: Env): Pr
         }
       }
 
+      // Get existing status for audit log
+      const existingAthlete = await env.DB.prepare(
+        `SELECT has_left_club, is_hidden FROM parkrun_athletes WHERE athlete_name = ?`
+      ).bind(athleteNameToUse).first<{ has_left_club: number | null; is_hidden: number | null }>();
+
+      // Log changes if detected left club status changed
+      if (hasLeftClub && (!existingAthlete || existingAthlete.has_left_club !== 1)) {
+        const { logAthleteChanges } = await import('../utils/audit-logger');
+        const auditEntries: any[] = [];
+
+        auditEntries.push({
+          tableName: 'parkrun_athletes' as const,
+          athleteIdentifier: athleteNameToUse,
+          fieldName: 'has_left_club',
+          oldValue: existingAthlete?.has_left_club?.toString() || '0',
+          newValue: '1',
+          changeSource: 'individual_scraper' as const,
+          changeReason: `Auto-detected: Last individual run (${lastIndividualRun?.last_date}) is >2 weeks after last club run (${lastClubRun?.last_date})`,
+          metadata: {
+            last_club_run_date: lastClubRun?.last_date,
+            last_individual_run_date: lastIndividualRun?.last_date,
+            parkrun_athlete_id: parkrunAthleteId,
+          },
+        });
+
+        // Also log the auto-hide
+        if (!existingAthlete || existingAthlete.is_hidden !== 1) {
+          auditEntries.push({
+            tableName: 'parkrun_athletes' as const,
+            athleteIdentifier: athleteNameToUse,
+            fieldName: 'is_hidden',
+            oldValue: existingAthlete?.is_hidden?.toString() || '0',
+            newValue: '1',
+            changeSource: 'individual_scraper' as const,
+            changeReason: 'Auto-hidden because athlete left club',
+          });
+        }
+
+        await logAthleteChanges(env, auditEntries);
+      }
+
       // Update parkrun_athletes table with dates and left status
       await env.DB.prepare(
         `INSERT INTO parkrun_athletes

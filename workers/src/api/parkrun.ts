@@ -891,6 +891,28 @@ export async function updateParkrunAthlete(
     const body = await request.json() as { is_hidden: number };
     const { is_hidden } = body;
 
+    // Get current value for audit log
+    const existing = await env.DB.prepare(
+      `SELECT is_hidden FROM parkrun_athletes WHERE athlete_name = ?`
+    ).bind(athleteName).first<{ is_hidden: number | null }>();
+
+    const oldValue = existing?.is_hidden?.toString() || null;
+    const newValue = is_hidden ? '1' : '0';
+
+    // Only log if value actually changed
+    if (oldValue !== newValue) {
+      const { logAthleteChange } = await import('../utils/audit-logger');
+      await logAthleteChange(env, {
+        tableName: 'parkrun_athletes',
+        athleteIdentifier: athleteName,
+        fieldName: 'is_hidden',
+        oldValue,
+        newValue,
+        changeSource: 'manual_api',
+        changeReason: 'Manual visibility toggle via admin UI',
+      });
+    }
+
     // Insert or update athlete record
     await env.DB.prepare(
       `INSERT INTO parkrun_athletes (athlete_name, is_hidden, updated_at)

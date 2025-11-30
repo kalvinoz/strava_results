@@ -199,12 +199,12 @@ export async function updateAthlete(
       );
     }
 
-    // Convert Strava ID to internal athlete ID
+    // Convert Strava ID to internal athlete ID and get current values for audit
     const athlete = await env.DB.prepare(
-      'SELECT id FROM athletes WHERE strava_id = ?'
+      'SELECT id, strava_id, is_admin, is_hidden, is_blocked FROM athletes WHERE strava_id = ?'
     )
       .bind(stravaIdParam)
-      .first<{ id: number }>();
+      .first<{ id: number; strava_id: number; is_admin: number | null; is_hidden: number | null; is_blocked: number | null }>();
 
     if (!athlete) {
       return new Response(
@@ -213,21 +213,72 @@ export async function updateAthlete(
       );
     }
 
+    // Get admin email for audit log
+    const admin = await env.DB.prepare(
+      'SELECT email FROM admin_users WHERE strava_id = ?'
+    ).bind(body.admin_strava_id).first<{ email: string }>();
+
+    const adminEmail = admin?.email || `strava_id:${body.admin_strava_id}`;
+
     // Build update query dynamically based on provided fields
     const updates: string[] = [];
     const bindings: any[] = [];
+    const auditEntries: any[] = [];
+    const { logAthleteChanges } = await import('../utils/audit-logger');
 
     if (body.is_admin !== undefined) {
-      updates.push('is_admin = ?');
-      bindings.push(body.is_admin ? 1 : 0);
+      const newValue = body.is_admin ? 1 : 0;
+      const oldValue = athlete.is_admin || 0;
+      if (newValue !== oldValue) {
+        updates.push('is_admin = ?');
+        bindings.push(newValue);
+        auditEntries.push({
+          tableName: 'athletes' as const,
+          athleteIdentifier: athlete.strava_id.toString(),
+          fieldName: 'is_admin',
+          oldValue: oldValue.toString(),
+          newValue: newValue.toString(),
+          changeSource: 'manual_api' as const,
+          changeReason: 'Admin status updated via admin API',
+          adminEmail,
+        });
+      }
     }
     if (body.is_hidden !== undefined) {
-      updates.push('is_hidden = ?');
-      bindings.push(body.is_hidden ? 1 : 0);
+      const newValue = body.is_hidden ? 1 : 0;
+      const oldValue = athlete.is_hidden || 0;
+      if (newValue !== oldValue) {
+        updates.push('is_hidden = ?');
+        bindings.push(newValue);
+        auditEntries.push({
+          tableName: 'athletes' as const,
+          athleteIdentifier: athlete.strava_id.toString(),
+          fieldName: 'is_hidden',
+          oldValue: oldValue.toString(),
+          newValue: newValue.toString(),
+          changeSource: 'manual_api' as const,
+          changeReason: 'Visibility updated via admin API',
+          adminEmail,
+        });
+      }
     }
     if (body.is_blocked !== undefined) {
-      updates.push('is_blocked = ?');
-      bindings.push(body.is_blocked ? 1 : 0);
+      const newValue = body.is_blocked ? 1 : 0;
+      const oldValue = athlete.is_blocked || 0;
+      if (newValue !== oldValue) {
+        updates.push('is_blocked = ?');
+        bindings.push(newValue);
+        auditEntries.push({
+          tableName: 'athletes' as const,
+          athleteIdentifier: athlete.strava_id.toString(),
+          fieldName: 'is_blocked',
+          oldValue: oldValue.toString(),
+          newValue: newValue.toString(),
+          changeSource: 'manual_api' as const,
+          changeReason: 'Block status updated via admin API',
+          adminEmail,
+        });
+      }
     }
 
     if (updates.length === 0) {
@@ -235,6 +286,11 @@ export async function updateAthlete(
         JSON.stringify({ error: 'No fields to update' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
+    }
+
+    // Log audit entries
+    if (auditEntries.length > 0) {
+      await logAthleteChanges(env, auditEntries);
     }
 
     bindings.push(athlete.id);

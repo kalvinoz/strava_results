@@ -13,6 +13,7 @@ import { getParkrunResults, getParkrunStats, getParkrunAthletes, updateParkrunAt
 import { importParkrunCSV } from './api/parkrun-import';
 import { importIndividualParkrunCSV } from './api/parkrun-import-individual';
 import { getAthletesToScrape } from './api/parkrun-athletes-to-scrape';
+import { getAthleteAuditLog, getAthleteAuditHistory, getRecentLeftClubChanges } from './api/athlete-audit';
 import { getEventSuggestions, updateEventSuggestion, triggerEventAnalysis, getEventNames, getEventStats, renameEvent } from './api/events';
 import { backfillPolylines } from './api/polyline-backfill';
 import { handleRawResponseBackfill } from './api/raw-response-backfill';
@@ -431,6 +432,21 @@ export default {
       if (parkrunAthleteMatch && request.method === 'PATCH') {
         const athleteName = decodeURIComponent(parkrunAthleteMatch[1]);
         return updateParkrunAthlete(request, env, athleteName);
+      }
+
+      // Audit log routes
+      if (path === '/api/audit/athletes' && request.method === 'GET') {
+        return getAthleteAuditLog(request, env);
+      }
+
+      if (path === '/api/audit/recent-left-club' && request.method === 'GET') {
+        return getRecentLeftClubChanges(request, env);
+      }
+
+      const auditAthleteMatch = path.match(/^\/api\/audit\/athletes\/(.+)$/);
+      if (auditAthleteMatch && request.method === 'GET') {
+        const athleteIdentifier = decodeURIComponent(auditAthleteMatch[1]);
+        return getAthleteAuditHistory(request, env, athleteIdentifier);
       }
 
       // Event routes
