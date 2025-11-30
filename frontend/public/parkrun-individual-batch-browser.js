@@ -19,8 +19,9 @@
  */
 
 (async function() {
-  console.clear();
-  console.log('🏃 Parkrun Individual Batch Scraper (Browser) v1.0');
+  // Don't clear console so we can see errors
+  // console.clear();
+  console.log('\n🏃 Parkrun Individual Batch Scraper (Browser) v1.0');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
   // ========== CONFIGURATION ==========
