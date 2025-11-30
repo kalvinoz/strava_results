@@ -173,9 +173,13 @@
     currentIndex = athletes.findIndex(a => a.parkrun_athlete_id === currentAthleteId);
   }
 
-  // Always start from index 0 to ensure we scrape all athletes
-  if (currentIndex !== 0) {
-    console.log('🔄 Starting from first athlete to ensure complete scrape...\n');
+  // Check if a scraping session is already in progress
+  const SCRAPER_CONFIG_KEY = 'parkrun_batch_scraper_config';
+  const existingSession = sessionStorage.getItem(SCRAPER_CONFIG_KEY);
+
+  // If no session exists AND we're not on the first athlete, redirect to start from the beginning
+  if (!existingSession && currentIndex !== 0) {
+    console.log('🔄 Starting new session from first athlete to ensure complete scrape...\n');
 
     const firstAthlete = athletes[0];
     const correctUrl = new URL(`https://www.parkrun.com.au/parkrunner/${firstAthlete.parkrun_athlete_id}/all/`);
@@ -189,6 +193,29 @@
     console.log(`🌐 Redirecting to: ${correctUrl.toString()}\n`);
     window.location.href = correctUrl.toString();
     return;
+  }
+
+  // If athlete not found in list at all, navigate to first athlete
+  if (currentIndex === -1) {
+    console.log('⚠️  Current athlete not in list, navigating to first athlete...\n');
+
+    const firstAthlete = athletes[0];
+    const correctUrl = new URL(`https://www.parkrun.com.au/parkrunner/${firstAthlete.parkrun_athlete_id}/all/`);
+    correctUrl.searchParams.set('apiKey', CONFIG.apiKey);
+    correctUrl.searchParams.set('apiEndpoint', CONFIG.apiEndpoint);
+    correctUrl.searchParams.set('athletesApiEndpoint', CONFIG.athletesApiEndpoint);
+    correctUrl.searchParams.set('mode', CONFIG.mode);
+    correctUrl.searchParams.set('delay', CONFIG.delayBetweenAthletes.toString());
+    correctUrl.searchParams.set('autoNavigate', CONFIG.autoNavigate.toString());
+
+    console.log(`🌐 Redirecting to: ${correctUrl.toString()}\n`);
+    window.location.href = correctUrl.toString();
+    return;
+  }
+
+  // Mark session as active (if not already)
+  if (!existingSession) {
+    sessionStorage.setItem(SCRAPER_CONFIG_KEY, JSON.stringify({ started: Date.now() }));
   }
 
   const currentAthlete = athletes[currentIndex];
