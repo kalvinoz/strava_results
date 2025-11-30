@@ -23,8 +23,14 @@
 
 (async function() {
   console.clear();
-  console.log('🏃 Parkrun Smart Scraper v4.1');
+  console.log('🏃 Parkrun Smart Scraper v4.2');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+
+  // Global stop flag
+  window.stopParkrunScraper = false;
+
+  // Clear completion flag from previous runs
+  sessionStorage.removeItem('parkrun_scraper_completed');
 
   // ========== CONFIGURATION ==========
   // Get config from URL params or use defaults
@@ -434,6 +440,8 @@
   console.log(`  Auto-upload: ${CONFIG.autoUpload ? 'Yes' : 'No'}`);
   console.log(`  Replace mode: ${CONFIG.replaceMode ? 'Yes (delete all data before scraping)' : 'No (append to existing data)'}`);
   console.log('');
+  console.log('💡 To stop the scraper at any time, run: window.stopParkrunScraper = true');
+  console.log('');
 
   // Get all dates to scrape (Saturdays + special dates like Christmas/New Year)
   const saturdays = getSaturdaysInRange(CONFIG.startDate, CONFIG.endDate);
@@ -498,6 +506,14 @@
   let datesProcessed = 0;
 
   for (let i = 0; i < allDates.length; i++) {
+    // Check if user requested to stop
+    if (window.stopParkrunScraper) {
+      console.log('\n🛑 Scraper stopped by user');
+      console.log(`   Processed ${datesProcessed}/${allDates.length} dates`);
+      console.log(`   Collected ${allResults.length} results`);
+      break;
+    }
+
     const date = allDates[i];
     const progress = Math.round((i / allDates.length) * 100);
 
@@ -529,7 +545,12 @@
         totalUploaded = allResults.length;
         console.log(`✅ Batch ${batchNum} uploaded! Total uploaded so far: ${totalUploaded} results\n`);
       } else {
-        console.log(`⚠️  Batch ${batchNum} upload failed, will include in final upload\n`);
+        console.log(`❌ Batch ${batchNum} upload failed - stopping scraper`);
+        console.log(`   To continue scraping without uploads, disable autoUpload`);
+        console.log(`   Collected ${allResults.length} results before stopping\n`);
+        // Stop the scraper on upload failure
+        window.stopParkrunScraper = true;
+        break;
       }
     }
 
@@ -541,11 +562,17 @@
 
   // ========== RESULTS ==========
 
+  const wasStoppedEarly = window.stopParkrunScraper;
+
   console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('✅ SCRAPING COMPLETE');
+  if (wasStoppedEarly) {
+    console.log('🛑 SCRAPING STOPPED');
+  } else {
+    console.log('✅ SCRAPING COMPLETE');
+  }
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
   console.log(`📊 Statistics:`);
-  console.log(`   Dates processed: ${allDates.length}`);
+  console.log(`   Dates processed: ${datesProcessed}/${allDates.length}`);
   console.log(`   Successful: ${successCount}`);
   console.log(`   Failed: ${failCount}`);
   console.log(`   Total results: ${allResults.length}`);
@@ -560,9 +587,22 @@
     console.log('   - Club number is correct (19959 for Woodstock Runners)');
     console.log('   - Date range includes Saturdays');
     console.log('   - Members have registered their club with parkrun');
-    // Signal completion for automation
-    window.scraperComplete = true;
-    window.scraperResults = { success: false, totalResults: 0, error: 'No results found' };
+    // Signal completion for automation (only if not stopped early)
+    if (!wasStoppedEarly) {
+      window.scraperComplete = true;
+      window.scraperResults = { success: false, totalResults: 0, error: 'No results found' };
+      sessionStorage.setItem('parkrun_scraper_completed', 'true');
+    }
+    return;
+  }
+
+  // If stopped early, don't mark as complete
+  if (wasStoppedEarly) {
+    console.log('\n💡 Scraper was stopped. To resume:');
+    console.log('   1. Adjust date range if needed');
+    console.log('   2. Run the script again');
+    console.log('   3. Results collected so far are shown below\n');
+    // Don't set completion flags when stopped early
     return;
   }
 
