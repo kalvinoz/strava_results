@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Parkrun Club Results Scraper
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.3
 // @description  Scrapes Woodstock Runners parkrun club results - click the floating button to start (requires API key)
 // @author       Woodstock Results
 // @match        https://www.parkrun.com/results/consolidatedclub/*
@@ -412,10 +412,29 @@
             console.log('✅ Club scraper script loaded and executing...');
             showStatus('🔄 Scraper running... Check console for progress');
 
-            // Monitor for completion
+            // Monitor for completion or stop
             const checkInterval = setInterval(() => {
-                // Check console messages or page state to detect completion
-                // The smart scraper logs completion messages
+                // Check if scraper was stopped
+                if (window.stopParkrunScraper) {
+                    clearInterval(checkInterval);
+                    button.textContent = '🛑 Scraper Stopped';
+                    button.classList.remove('active');
+                    showStatus('🛑 Scraper stopped by user');
+                    sessionStorage.removeItem(STORAGE_KEY);
+
+                    setTimeout(() => {
+                        button.textContent = '🏃 Scrape Club Results';
+                        button.onclick = function() {
+                            const apiKey = getApiKey();
+                            if (!apiKey) return;
+                            showConfigModal(apiKey);
+                        };
+                        statusDiv.style.display = 'none';
+                    }, 3000);
+                    return;
+                }
+
+                // Check if scraper completed successfully
                 if (sessionStorage.getItem('parkrun_scraper_completed')) {
                     clearInterval(checkInterval);
                     button.textContent = '✅ Scraping Complete!';
@@ -428,6 +447,11 @@
                     setTimeout(() => {
                         button.textContent = '🏃 Scrape Club Results';
                         button.classList.remove('completed');
+                        button.onclick = function() {
+                            const apiKey = getApiKey();
+                            if (!apiKey) return;
+                            showConfigModal(apiKey);
+                        };
                         statusDiv.style.display = 'none';
                     }, 5000);
                 }

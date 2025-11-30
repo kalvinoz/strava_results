@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build && cp -r functions dist/",
-    "build:skip-check": "vite build && cp -r functions dist/",
+    "build": "tsc && vite build && tsc functions/**/*.ts --outDir dist/functions --module esnext --target es2020 --moduleResolution node --skipLibCheck",
+    "build:skip-check": "vite build && tsc functions/**/*.ts --outDir dist/functions --module esnext --target es2020 --moduleResolution node --skipLibCheck",
     "preview": "vite preview",
     "deploy": "npm run build && wrangler pages deploy dist --project-name=woodstock-results",
     "deploy:skip-check": "npm run build:skip-check && wrangler pages deploy dist --project-name=woodstock-results",

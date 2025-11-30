@@ -292,6 +292,9 @@ export default function ParkrunWeeklySummary() {
       {milestones && (
         <div className="milestones-section">
           <h3><i className="fa-solid fa-medal"></i> Milestones</h3>
+          <p style={{ fontSize: '0.85em', color: '#666', marginTop: '-8px', marginBottom: '12px' }}>
+            Always check the runner's official parkrun page
+          </p>
 
           {/* Achieved milestones */}
           <div className="milestone-group">
