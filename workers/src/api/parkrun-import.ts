@@ -278,14 +278,17 @@ export async function importParkrunCSV(request: Request, env: Env): Promise<Resp
 
       if (minDate && maxDate) {
         // Delete only club results within the specified date range (preserve individual results)
+        // Include NULL data_source for backwards compatibility with old data
         const deleteResult = await env.DB.prepare(
-          'DELETE FROM parkrun_results WHERE date >= ? AND date <= ? AND data_source = ?'
+          'DELETE FROM parkrun_results WHERE date >= ? AND date <= ? AND (data_source = ? OR data_source IS NULL)'
         ).bind(minDate, maxDate, 'club').run();
         deleted = deleteResult.meta.changes || 0;
         console.log(`Replace mode (first batch): Deleted ${deleted} club results between ${minDate} and ${maxDate}`);
       } else {
         // No date range specified and CSV is empty: Delete ALL club data (fallback for legacy usage)
-        const deleteResult = await env.DB.prepare('DELETE FROM parkrun_results WHERE data_source = ?').bind('club').run();
+        const deleteResult = await env.DB.prepare(
+          'DELETE FROM parkrun_results WHERE data_source = ? OR data_source IS NULL'
+        ).bind('club').run();
         deleted = deleteResult.meta.changes || 0;
         console.log(`Replace mode (first batch, no date range): Deleted all ${deleted} club results`);
       }

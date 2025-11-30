@@ -490,6 +490,7 @@
       // Include date range parameters to limit deletion
       const deleteUrl = new URL(CONFIG.apiEndpoint);
       deleteUrl.searchParams.set('replace', 'true');
+      deleteUrl.searchParams.set('first_batch', 'true');  // Only delete on first batch
       deleteUrl.searchParams.set('date_from', CONFIG.startDate);
       deleteUrl.searchParams.set('date_to', CONFIG.endDate);
 

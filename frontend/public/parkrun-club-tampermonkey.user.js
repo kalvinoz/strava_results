@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Parkrun Club Results Scraper
 // @namespace    http://tampermonkey.net/
-// @version      1.3
+// @version      1.4
 // @description  Scrapes Woodstock Runners parkrun club results - click the floating button to start (requires API key)
 // @author       Woodstock Results
 // @match        https://www.parkrun.com/results/consolidatedclub/*
@@ -207,12 +207,9 @@
         button.onclick = function() {
             if (confirm('Stop the club scraper?')) {
                 // Set the stop flag that the scraper checks
+                // Don't reset the button here - let the monitoring loop handle it
                 window.stopParkrunScraper = true;
-                sessionStorage.removeItem(STORAGE_KEY);
-                button.textContent = '🏃 Scrape Club Results';
-                button.classList.remove('active');
-                statusDiv.style.display = 'none';
-                console.log('✅ Parkrun Club Scraper stopped');
+                console.log('🛑 Stop requested...');
             }
         };
 
@@ -336,12 +333,9 @@
             button.onclick = function() {
                 if (confirm('Stop the club scraper?')) {
                     // Set the stop flag that the scraper checks
+                    // Don't reset the button here - let the monitoring loop handle it
                     window.stopParkrunScraper = true;
-                    sessionStorage.removeItem(STORAGE_KEY);
-                    button.textContent = '🏃 Scrape Club Results';
-                    button.classList.remove('active');
-                    statusDiv.style.display = 'none';
-                    console.log('✅ Parkrun Club Scraper stopped');
+                    console.log('🛑 Stop requested...');
                 }
             };
 
