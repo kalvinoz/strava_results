@@ -23,7 +23,7 @@
 
 (async function() {
   console.clear();
-  console.log('🏃 Parkrun Smart Scraper v4.2');
+  console.log('🏃 Parkrun Smart Scraper v4.3');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
   // Global stop flag
@@ -68,17 +68,36 @@
 
   function getSaturdaysInRange(startDate, endDate) {
     const saturdays = [];
-    const start = new Date(startDate);
-    const end = new Date(endDate);
 
-    const current = new Date(start);
-    while (current.getDay() !== 6) {
-      current.setDate(current.getDate() + 1);
+    // Helper to get day of week for a date string (0=Sun, 6=Sat)
+    // Always use UTC to ensure consistent behavior across timezones
+    const getDayOfWeek = (dateStr) => {
+      const [y, m, d] = dateStr.split('-').map(Number);
+      const date = new Date(Date.UTC(y, m - 1, d));
+      return date.getUTCDay();
+    };
+
+    // Helper to add days to a date string
+    const addDays = (dateStr, days) => {
+      const [y, m, d] = dateStr.split('-').map(Number);
+      const date = new Date(Date.UTC(y, m - 1, d));
+      date.setUTCDate(date.getUTCDate() + days);
+      const year = date.getUTCFullYear();
+      const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(date.getUTCDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+
+    // Find first Saturday on or after start date
+    let current = startDate;
+    while (getDayOfWeek(current) !== 6) {
+      current = addDays(current, 1);
     }
 
-    while (current <= end) {
-      saturdays.push(current.toISOString().split('T')[0]);
-      current.setDate(current.getDate() + 7);
+    // Collect all Saturdays until end date
+    while (current <= endDate) {
+      saturdays.push(current);
+      current = addDays(current, 7);
     }
 
     return saturdays;
@@ -90,24 +109,21 @@
    */
   function getSpecialParkrunDates(startDate, endDate) {
     const specialDates = [];
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-
-    const startYear = start.getFullYear();
-    const endYear = end.getFullYear();
+    const startYear = parseInt(startDate.split('-')[0]);
+    const endYear = parseInt(endDate.split('-')[0]);
 
     // Generate Christmas (Dec 25) and New Year (Jan 1) for each year in range
     for (let year = startYear; year <= endYear; year++) {
       // Christmas Day
-      const christmas = new Date(`${year}-12-25`);
-      if (christmas >= start && christmas <= end) {
-        specialDates.push(christmas.toISOString().split('T')[0]);
+      const christmas = `${year}-12-25`;
+      if (christmas >= startDate && christmas <= endDate) {
+        specialDates.push(christmas);
       }
 
       // New Year's Day
-      const newYear = new Date(`${year}-01-01`);
-      if (newYear >= start && newYear <= end) {
-        specialDates.push(newYear.toISOString().split('T')[0]);
+      const newYear = `${year}-01-01`;
+      if (newYear >= startDate && newYear <= endDate) {
+        specialDates.push(newYear);
       }
     }
 
