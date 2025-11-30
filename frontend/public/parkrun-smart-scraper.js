@@ -453,17 +453,23 @@
   console.log(`🔄 Fibonacci backoff sequence: ${fibonacciWaits.join(', ')}s`);
   console.log('');
 
-  // If replace mode is enabled, delete all existing data FIRST before scraping
+  // If replace mode is enabled, delete existing data within the date range FIRST before scraping
   if (CONFIG.replaceMode && CONFIG.autoUpload && CONFIG.apiEndpoint) {
-    console.log('🗑️  Replace mode: Deleting all existing parkrun data...');
+    console.log(`🗑️  Replace mode: Deleting parkrun data from ${CONFIG.startDate} to ${CONFIG.endDate}...`);
     try {
-      // Send an empty upload with replace=true to trigger the delete
+      // Send an empty upload with replace=true and date range to trigger the delete
       const emptyBlob = new Blob(['Date,Event,Pos,parkrunner,Time'], { type: 'text/csv' });
       const emptyFile = new File([emptyBlob], 'empty.csv', { type: 'text/csv' });
       const formData = new FormData();
       formData.append('file', emptyFile);
 
-      const response = await fetch(`${CONFIG.apiEndpoint}?replace=true`, {
+      // Include date range parameters to limit deletion
+      const deleteUrl = new URL(CONFIG.apiEndpoint);
+      deleteUrl.searchParams.set('replace', 'true');
+      deleteUrl.searchParams.set('date_from', CONFIG.startDate);
+      deleteUrl.searchParams.set('date_to', CONFIG.endDate);
+
+      const response = await fetch(deleteUrl.toString(), {
         method: 'POST',
         body: formData,
         headers: {
@@ -473,7 +479,7 @@
 
       if (response.ok) {
         const result = await response.json();
-        console.log(`✅ Deleted ${result.deleted || 0} existing records`);
+        console.log(`✅ Deleted ${result.deleted || 0} existing records within date range`);
       } else {
         console.warn('⚠️  Failed to delete existing data, will try with first batch');
       }

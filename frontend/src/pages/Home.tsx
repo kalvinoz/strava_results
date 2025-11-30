@@ -122,20 +122,24 @@ export default function Home() {
             )}
           </div>
 
-          <div className="hero-buttons hero-buttons-secondary">
-            <Link to="/dashboard" className="button button-secondary">
-              View Races
-            </Link>
-            <Link to="/parkrun" className="button button-secondary">
-              View Parkrun
-            </Link>
-          </div>
+          {isLoggedIn && (
+            <>
+              <div className="hero-buttons hero-buttons-secondary">
+                <Link to="/dashboard" className="button button-secondary">
+                  View Races
+                </Link>
+                <Link to="/parkrun" className="button button-secondary">
+                  View Parkrun
+                </Link>
+              </div>
 
-          <div className="hero-buttons" style={{ marginTop: '1rem' }}>
-            <Link to="/submit-activities" className="button button-tertiary">
-              Manually upload Strava activities
-            </Link>
-          </div>
+              <div className="hero-buttons" style={{ marginTop: '1rem' }}>
+                <Link to="/submit-activities" className="button button-tertiary">
+                  Manually upload Strava activities
+                </Link>
+              </div>
+            </>
+          )}
         </div>
 
         <div style={{

@@ -220,6 +220,9 @@ export async function importParkrunCSV(request: Request, env: Env): Promise<Resp
     // Check if we should replace existing data
     const url = new URL(request.url);
     const shouldReplace = url.searchParams.get('replace') === 'true';
+    const firstBatch = url.searchParams.get('first_batch') === 'true'; // Only delete on first batch
+    const dateFrom = url.searchParams.get('date_from'); // Optional: restrict delete to date range
+    const dateTo = url.searchParams.get('date_to');
 
     const formData = await request.formData();
     const fileEntry = formData.get('file');
@@ -247,11 +250,45 @@ export async function importParkrunCSV(request: Request, env: Env): Promise<Resp
     let errors = 0;
     let deleted = 0;
 
-    // If replace mode, delete all existing parkrun data
-    if (shouldReplace) {
-      // Delete all results
-      const deleteResult = await env.DB.prepare('DELETE FROM parkrun_results').run();
-      deleted = deleteResult.meta.changes || 0;
+    // If replace mode AND first batch, handle deletion based on query params or CSV content
+    // Only delete on the first batch to avoid wiping out previously imported batches
+    if (shouldReplace && firstBatch) {
+      let minDate: string | null = null;
+      let maxDate: string | null = null;
+
+      // Option 1: Use date range from query parameters (preferred for batch scraping)
+      if (dateFrom && dateTo) {
+        minDate = dateFrom;
+        maxDate = dateTo;
+      } else {
+        // Option 2: Extract dates from CSV to determine the date range
+        const dates: string[] = [];
+        for (const row of rows) {
+          const date = parseParkrunDate(row.Date || row.date);
+          if (date) {
+            dates.push(date);
+          }
+        }
+
+        if (dates.length > 0) {
+          minDate = dates.reduce((min, date) => date < min ? date : min, dates[0]);
+          maxDate = dates.reduce((max, date) => date > max ? date : max, dates[0]);
+        }
+      }
+
+      if (minDate && maxDate) {
+        // Delete only club results within the specified date range (preserve individual results)
+        const deleteResult = await env.DB.prepare(
+          'DELETE FROM parkrun_results WHERE date >= ? AND date <= ? AND data_source = ?'
+        ).bind(minDate, maxDate, 'club').run();
+        deleted = deleteResult.meta.changes || 0;
+        console.log(`Replace mode (first batch): Deleted ${deleted} club results between ${minDate} and ${maxDate}`);
+      } else {
+        // No date range specified and CSV is empty: Delete ALL club data (fallback for legacy usage)
+        const deleteResult = await env.DB.prepare('DELETE FROM parkrun_results WHERE data_source = ?').bind('club').run();
+        deleted = deleteResult.meta.changes || 0;
+        console.log(`Replace mode (first batch, no date range): Deleted all ${deleted} club results`);
+      }
     }
 
     // Create sync log entry
