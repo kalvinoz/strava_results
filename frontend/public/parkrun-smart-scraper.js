@@ -463,7 +463,7 @@
   const saturdays = getSaturdaysInRange(CONFIG.startDate, CONFIG.endDate);
   const specialDates = getSpecialParkrunDates(CONFIG.startDate, CONFIG.endDate);
 
-  const allDates = [...new Set([...saturdays, ...specialDates])].sort();
+  const allDates = [...new Set([...saturdays, ...specialDates])].sort().reverse();
 
   console.log(`📅 Dates to scrape: ${allDates.length} days`);
   console.log(`   - Saturdays: ${saturdays.length}`);
