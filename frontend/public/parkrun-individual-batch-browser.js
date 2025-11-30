@@ -173,9 +173,9 @@
     currentIndex = athletes.findIndex(a => a.parkrun_athlete_id === currentAthleteId);
   }
 
-  // If not found, we're on the wrong page - navigate to first athlete
-  if (currentIndex === -1) {
-    console.log('⚠️  Current athlete not in list, navigating to first athlete...\n');
+  // Always start from index 0 to ensure we scrape all athletes
+  if (currentIndex !== 0) {
+    console.log('🔄 Starting from first athlete to ensure complete scrape...\n');
 
     const firstAthlete = athletes[0];
     const correctUrl = new URL(`https://www.parkrun.com.au/parkrunner/${firstAthlete.parkrun_athlete_id}/all/`);
