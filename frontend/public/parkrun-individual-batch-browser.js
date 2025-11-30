@@ -603,8 +603,9 @@
         });
       }
 
-      // Clear stats
+      // Clear stats and session config
       sessionStorage.removeItem(STATS_KEY);
+      sessionStorage.removeItem(SCRAPER_CONFIG_KEY);
       return;
     }
 
