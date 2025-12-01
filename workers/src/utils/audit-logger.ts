@@ -116,7 +116,17 @@ export async function getAthleteAuditHistory(
      LIMIT ?`
   )
     .bind(tableName, athleteIdentifier, limit)
-    .all();
+    .all<{
+      id: number;
+      field_name: string;
+      old_value: string | null;
+      new_value: string | null;
+      changed_at: number;
+      change_source: string;
+      change_reason: string | null;
+      admin_email: string | null;
+      metadata: string | null;
+    }>();
 
   return result.results || [];
 }

@@ -178,6 +178,20 @@
   const SCRAPER_CONFIG_KEY = 'parkrun_batch_scraper_config';
   const existingSession = sessionStorage.getItem(SCRAPER_CONFIG_KEY);
 
+  // ========== DEBUG LOGGING ==========
+  console.log(`\n🔍 DEBUG INFO:`);
+  console.log(`   Current athlete ID from URL: ${currentAthleteId}`);
+  console.log(`   Current index in athletes array: ${currentIndex}`);
+  console.log(`   Total athletes in list: ${athletes.length}`);
+  console.log(`   First athlete: ${athletes[0]?.athlete_name} (ID: ${athletes[0]?.parkrun_athlete_id})`);
+  console.log(`   Last athlete: ${athletes[athletes.length - 1]?.athlete_name} (ID: ${athletes[athletes.length - 1]?.parkrun_athlete_id})`);
+  console.log(`   Existing session in sessionStorage: ${existingSession ? 'YES' : 'NO'}`);
+  if (existingSession) {
+    console.log(`   Session data: ${existingSession}`);
+  }
+  console.log(`   First 5 athletes in list:`, athletes.slice(0, 5).map(a => `${a.athlete_name} (${a.parkrun_athlete_id})`));
+  console.log(``);
+
   // If no session exists AND we're not on the first athlete, redirect to start from the beginning
   if (!existingSession && currentIndex !== 0) {
     console.log('🔄 Starting new session from first athlete to ensure complete scrape...\n');
