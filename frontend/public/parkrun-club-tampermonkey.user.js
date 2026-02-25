@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Parkrun Club Results Scraper
 // @namespace    http://tampermonkey.net/
-// @version      1.4
-// @description  Scrapes Woodstock Runners parkrun club results - click the floating button to start (requires API key)
+// @version      1.5
+// @description  Scrapes Woodstock Runners parkrun club results - auto-starts on weekends, or click the floating button
 // @author       Woodstock Results
 // @match        https://www.parkrun.com/results/consolidatedclub/*
 // @match        https://www.parkrun.com.au/results/consolidatedclub/*
@@ -218,6 +218,41 @@
         return;
     }
 
+    // Auto-start if API key is already saved and today is the day after a parkrun event:
+    //   - Sunday (day after Saturday parkrun)
+    //   - Dec 26 (day after Christmas Day parkrun)
+    //   - Jan 2 (day after New Year's Day parkrun)
+    // This enables the iPhone Shortcut workflow: phone opens page → scraper runs automatically
+    const savedApiKey = localStorage.getItem(API_KEY_STORAGE);
+    const parkrunDate = getMostRecentParkrunDate();
+
+    if (savedApiKey && parkrunDate) {
+        const config = {
+            startDate: parkrunDate,
+            endDate: parkrunDate,
+            replaceMode: false,
+            apiEndpoint: 'https://strava-club-workers.pedroqueiroz.workers.dev/api/parkrun/import',
+            apiKey: savedApiKey,
+            clubNum: CLUB_NUM,
+            active: true
+        };
+
+        sessionStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+
+        button.textContent = '🔄 Auto-scraping...';
+        button.classList.add('active');
+        button.onclick = function() {
+            if (confirm('Stop the auto-scraper?')) {
+                window.stopParkrunScraper = true;
+                console.log('🛑 Stop requested...');
+            }
+        };
+
+        console.log(`🏃 Auto-starting scraper for parkrun date: ${parkrunDate}`);
+        runScraper();
+        return;
+    }
+
     // Get API key from localStorage or prompt user
     function getApiKey() {
         let apiKey = localStorage.getItem(API_KEY_STORAGE);
@@ -370,6 +405,35 @@
 
     function getDefaultEndDate() {
         return new Date().toISOString().split('T')[0]; // Today
+    }
+
+    // Returns the most recent parkrun date if today is the day AFTER a parkrun event,
+    // otherwise returns null (no auto-start).
+    // Parkrun runs on: Saturdays, Christmas Day (Dec 25), New Year's Day (Jan 1)
+    function getMostRecentParkrunDate() {
+        const today = new Date();
+        const day = today.getDay(); // 0=Sun, 6=Sat
+        const month = today.getMonth() + 1; // 1-12
+        const date = today.getDate();
+
+        // Sunday: scrape yesterday's Saturday parkrun
+        if (day === 0) {
+            const yesterday = new Date(today);
+            yesterday.setDate(yesterday.getDate() - 1);
+            return yesterday.toISOString().split('T')[0];
+        }
+
+        // Dec 26: scrape Christmas Day parkrun (Dec 25)
+        if (month === 12 && date === 26) {
+            return `${today.getFullYear()}-12-25`;
+        }
+
+        // Jan 2: scrape New Year's Day parkrun (Jan 1)
+        if (month === 1 && date === 2) {
+            return `${today.getFullYear()}-01-01`;
+        }
+
+        return null; // Not the day after a parkrun event
     }
 
     function showStatus(message) {
