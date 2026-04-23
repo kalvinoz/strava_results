@@ -192,9 +192,9 @@ export async function cleanupAthleteNames(env: Env): Promise<{
   // LIKE '% (A%)' is broad enough; stripAthleteIdSuffix confirms the pattern per name
   const allCandidates = await env.DB.prepare(
     `SELECT DISTINCT athlete_name FROM (
-       SELECT athlete_name FROM parkrun_results WHERE athlete_name LIKE '% (A%)'
+       SELECT athlete_name FROM parkrun_results WHERE athlete_name LIKE '%(A%)'
        UNION
-       SELECT athlete_name FROM parkrun_athletes WHERE athlete_name LIKE '% (A%)'
+       SELECT athlete_name FROM parkrun_athletes WHERE athlete_name LIKE '%(A%)'
      )`
   ).all<{ athlete_name: string }>();
 
@@ -208,7 +208,7 @@ export async function cleanupAthleteNames(env: Env): Promise<{
     if (canonical === athlete_name) continue; // No suffix found
 
     // Extract the parkrun athlete ID from the suffix
-    const idMatch = athlete_name.match(/\(A(\d+)\)\s*$/);
+    const idMatch = athlete_name.match(/[\s ]*\(A(\d+)\)[\s ]*$/);
     const extractedParkrunId = idMatch ? idMatch[1] : null;
 
     // Get all results for the bad name
@@ -735,7 +735,8 @@ function parseCSVLine(line: string): string[] {
  * parkrun sometimes appends " (A1234567)" to names in CSV exports.
  */
 export function stripAthleteIdSuffix(name: string): string {
-  return name.replace(/\s+\(A\d+\)\s*$/, '').trim();
+  // Handles regular space and non-breaking space ( ) before the suffix
+  return name.replace(/[\s ]*\(A\d+\)[\s ]*$/, '').trim();
 }
 
 /**
