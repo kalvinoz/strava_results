@@ -201,6 +201,7 @@ export default function Admin() {
   const [editingEventName, setEditingEventName] = useState<{ [key: number]: string }>({});
   const [showParkrunInstructions, setShowParkrunInstructions] = useState(false);
   const [showIndividualScraper, setShowIndividualScraper] = useState(false);
+  const [showAuditScript, setShowAuditScript] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
   const [showCopiedMessage, setShowCopiedMessage] = useState(false);
   const [apiKeyValue, setApiKeyValue] = useState('');
@@ -2755,6 +2756,212 @@ export default function Admin() {
               onMouseOut={(e) => (e.currentTarget.style.backgroundColor = '#10b981')}
             >
               <i className="fa-solid fa-download"></i> Download Individual Athlete Scraper
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Athlete Data Audit - Tampermonkey */}
+      <div style={{
+        marginBottom: '2rem',
+        backgroundColor: '#fffbeb',
+        borderRadius: '8px',
+        border: '2px solid #f59e0b',
+        overflow: 'hidden',
+      }}>
+        <button
+          onClick={() => setShowAuditScript(!showAuditScript)}
+          style={{
+            width: '100%',
+            padding: '1rem 1.5rem',
+            backgroundColor: 'transparent',
+            border: 'none',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            fontSize: '1rem',
+            fontWeight: 700,
+            color: '#92400e',
+          }}
+        >
+          <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <i className="fa-solid fa-magnifying-glass-chart"></i> Athlete Data Audit
+          </span>
+          <span style={{ fontSize: '1.2rem' }}>
+            {showAuditScript ? <i className="fa-solid fa-chevron-down"></i> : <i className="fa-solid fa-chevron-right"></i>}
+          </span>
+        </button>
+
+        {showAuditScript && (
+          <div style={{ padding: '0 1.5rem 1.5rem 1.5rem' }}>
+            <p style={{
+              fontSize: '0.9rem',
+              color: '#b45309',
+              lineHeight: '1.6',
+              marginBottom: '1rem',
+            }}>
+              Compares each athlete's total run count on parkrun.com against the database.
+              If counts differ, automatically fetches the missing runs from their <code>/all/</code> page
+              and imports them. Validates the counts match after import.
+            </p>
+
+            <div style={{
+              backgroundColor: 'white',
+              padding: '1rem',
+              borderRadius: '6px',
+              marginBottom: '1rem',
+              border: '1px solid #f59e0b',
+            }}>
+              <p style={{
+                fontSize: '0.85rem',
+                fontWeight: 600,
+                color: '#92400e',
+                marginBottom: '0.5rem',
+              }}>
+                <i className="fa-solid fa-clipboard"></i> Installation:
+              </p>
+              <ol style={{
+                fontSize: '0.85rem',
+                color: '#b45309',
+                margin: '0',
+                paddingLeft: '1.5rem',
+                lineHeight: '1.8',
+              }}>
+                <li>Install <a
+                  href="https://www.tampermonkey.net/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: '#2563eb', textDecoration: 'underline' }}
+                >Tampermonkey browser extension</a></li>
+                <li>Click the button below to download the userscript</li>
+                <li>Tampermonkey will prompt you to install it</li>
+                <li>Navigate to any parkrun athlete summary page (e.g., <a
+                  href="https://www.parkrun.com.au/parkrunner/7796495/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: '#2563eb', textDecoration: 'underline' }}
+                >parkrun.com.au/parkrunner/7796495/</a>)</li>
+                <li>Click the orange <strong>"🔍 Audit Data"</strong> button that appears</li>
+                <li>Choose <strong>Audit current athlete</strong> or <strong>Audit all club athletes</strong></li>
+              </ol>
+            </div>
+
+            <div style={{
+              backgroundColor: 'white',
+              padding: '1rem',
+              borderRadius: '6px',
+              marginBottom: '1rem',
+              border: '1px solid #f59e0b',
+            }}>
+              <p style={{
+                fontSize: '0.85rem',
+                fontWeight: 600,
+                color: '#92400e',
+                marginBottom: '0.5rem',
+              }}>
+                <i className="fa-solid fa-circle-info"></i> How it works:
+              </p>
+              <ul style={{
+                fontSize: '0.85rem',
+                color: '#b45309',
+                margin: '0',
+                paddingLeft: '1.5rem',
+                lineHeight: '1.8',
+              }}>
+                <li>Reads the <em>"X parkruns total"</em> count from the parkrun.com summary page</li>
+                <li>Compares it against the count in our database</li>
+                <li>If they match — moves on (or concludes if single athlete)</li>
+                <li>If they differ — fetches the <code>/all/</code> page and imports missing runs</li>
+                <li>Re-validates after import; shows an error if counts still don't match</li>
+              </ul>
+            </div>
+
+            <div style={{
+              backgroundColor: 'white',
+              padding: '1rem',
+              borderRadius: '6px',
+              marginBottom: '1rem',
+              border: '1px solid #f59e0b',
+            }}>
+              <p style={{
+                fontSize: '0.85rem',
+                fontWeight: 600,
+                color: '#92400e',
+                marginBottom: '0.5rem',
+              }}>
+                <i className="fa-solid fa-key"></i> API Key:
+              </p>
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                fontSize: '0.85rem',
+                color: '#b45309',
+              }}>
+                {apiKeyValue ? (
+                  <>
+                    <span style={{ fontFamily: 'monospace', position: 'relative' }}>
+                      {showApiKey ? apiKeyValue : '••••••••••••••••'}
+                      {showCopiedMessage && (
+                        <span style={{
+                          position: 'absolute',
+                          top: '-1.5rem',
+                          left: '0',
+                          backgroundColor: '#92400e',
+                          color: 'white',
+                          padding: '0.25rem 0.5rem',
+                          borderRadius: '4px',
+                          fontSize: '0.7rem',
+                          whiteSpace: 'nowrap',
+                        }}>
+                          Copied to clipboard
+                        </span>
+                      )}
+                    </span>
+                    <button
+                      onClick={handleRevealApiKey}
+                      style={{
+                        padding: '0.25rem 0.5rem',
+                        fontSize: '0.75rem',
+                        color: '#2563eb',
+                        backgroundColor: 'transparent',
+                        border: '1px solid #2563eb',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {showApiKey ? 'Hide' : 'Reveal & Copy'}
+                    </button>
+                  </>
+                ) : (
+                  <span style={{ fontStyle: 'italic', color: '#6b7280' }}>
+                    Not set - will be prompted on first use
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <button
+              onClick={() => {
+                const userscriptUrl = `${window.location.origin}/parkrun-audit-tampermonkey.user.js`;
+                window.open(userscriptUrl, '_blank');
+              }}
+              style={{
+                padding: '0.75rem 1.5rem',
+                fontSize: '0.95rem',
+                fontWeight: 600,
+                color: 'white',
+                backgroundColor: '#f59e0b',
+                border: 'none',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                transition: 'background-color 0.2s',
+              }}
+              onMouseOver={(e) => (e.currentTarget.style.backgroundColor = '#d97706')}
+              onMouseOut={(e) => (e.currentTarget.style.backgroundColor = '#f59e0b')}
+            >
+              <i className="fa-solid fa-download"></i> Download Athlete Audit Script
             </button>
           </div>
         )}
