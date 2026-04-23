@@ -178,6 +178,92 @@ async function deleteUnmappedResults(env: Env): Promise<number> {
 }
 
 /**
+ * Clean up athlete names that have a parkrun athlete ID suffix " (A1234567)".
+ * For each bad name, re-attribute all results to the canonical name and remove
+ * the duplicate entry from parkrun_athletes.
+ * Returns counts of names fixed and results re-attributed.
+ */
+export async function cleanupAthleteNames(env: Env): Promise<{
+  namesFixed: number;
+  resultsReattributed: number;
+  athletesMerged: string[];
+}> {
+  // Find all athlete names with a parkrun ID suffix like " (A1234567)"
+  // LIKE '% (A%)' is broad enough; stripAthleteIdSuffix confirms the pattern per name
+  const allCandidates = await env.DB.prepare(
+    `SELECT DISTINCT athlete_name FROM (
+       SELECT athlete_name FROM parkrun_results WHERE athlete_name LIKE '% (A%)'
+       UNION
+       SELECT athlete_name FROM parkrun_athletes WHERE athlete_name LIKE '% (A%)'
+     )`
+  ).all<{ athlete_name: string }>();
+
+  let namesFixed = 0;
+  let resultsReattributed = 0;
+  const athletesMerged: string[] = [];
+
+  for (const { athlete_name } of (allCandidates.results || [])) {
+    // Extract the canonical name by stripping " (A<digits>)" suffix
+    const canonical = stripAthleteIdSuffix(athlete_name);
+    if (canonical === athlete_name) continue; // No suffix found
+
+    // Extract the parkrun athlete ID from the suffix
+    const idMatch = athlete_name.match(/\(A(\d+)\)\s*$/);
+    const extractedParkrunId = idMatch ? idMatch[1] : null;
+
+    // Get all results for the bad name
+    const badResults = await env.DB.prepare(
+      `SELECT id, event_name, event_number, date, parkrun_athlete_id
+       FROM parkrun_results WHERE athlete_name = ?`
+    ).bind(athlete_name).all<{ id: number; event_name: string; event_number: number; date: string; parkrun_athlete_id: string | null }>();
+
+    for (const result of (badResults.results || [])) {
+      // Check if canonical name already has this result (same event+date)
+      const existing = await env.DB.prepare(
+        `SELECT id FROM parkrun_results
+         WHERE athlete_name = ? AND event_name = ? AND event_number = ? AND date = ?`
+      ).bind(canonical, result.event_name, result.event_number, result.date).first<{ id: number }>();
+
+      if (existing) {
+        // Canonical already has this result — delete the duplicate
+        await env.DB.prepare(`DELETE FROM parkrun_results WHERE id = ?`).bind(result.id).run();
+      } else {
+        // Re-attribute to canonical name
+        await env.DB.prepare(
+          `UPDATE parkrun_results SET athlete_name = ? WHERE id = ?`
+        ).bind(canonical, result.id).run();
+      }
+      resultsReattributed++;
+    }
+
+    // Update parkrun_athletes: set parkrun_athlete on canonical entry and remove bad entry
+    const parkrunId = extractedParkrunId
+      ? `A${extractedParkrunId}`
+      : (badResults.results?.find(r => r.parkrun_athlete_id)?.parkrun_athlete_id ?? null);
+
+    if (parkrunId) {
+      await env.DB.prepare(
+        `INSERT INTO parkrun_athletes (athlete_name, parkrun_athlete)
+         VALUES (?, ?)
+         ON CONFLICT(athlete_name) DO UPDATE SET
+           parkrun_athlete = COALESCE(parkrun_athlete, excluded.parkrun_athlete),
+           updated_at = strftime('%s', 'now')`
+      ).bind(canonical, parkrunId).run();
+    }
+
+    // Delete the bad-name entry from parkrun_athletes (if it exists)
+    await env.DB.prepare(
+      `DELETE FROM parkrun_athletes WHERE athlete_name = ?`
+    ).bind(athlete_name).run();
+
+    athletesMerged.push(`${athlete_name} → ${canonical}`);
+    namesFixed++;
+  }
+
+  return { namesFixed, resultsReattributed, athletesMerged };
+}
+
+/**
  * Detect runners with multiple activities on the same day (excluding Jan 1)
  */
 async function detectDuplicateSameDayActivities(env: Env): Promise<Array<{ athlete_name: string; date: string; count: number }>> {
@@ -325,7 +411,7 @@ export async function importParkrunCSV(request: Request, env: Env): Promise<Resp
           const position = parseInt(row.Pos || row.pos || row.Position || '0');
           const genderPositionStr = row['Gender Pos'] || row.genderPos || row['gender pos'] || row.GenderPos || '';
           const genderPosition = genderPositionStr ? parseInt(genderPositionStr) : null;
-          const athleteName = row.parkrunner || row.Parkrunner || row['Park Runner'];
+          const athleteName = stripAthleteIdSuffix(row.parkrunner || row.Parkrunner || row['Park Runner'] || '');
           const parkrunId = row['Parkrun ID'] || row.parkrunId || row['parkrun id'] || row.ParkrunID || '';
           const timeString = row.Time || row.time;
           const ageGrade = row['Age Grade'] || row.ageGrade || row['age grade'];
@@ -469,6 +555,12 @@ export async function importParkrunCSV(request: Request, env: Env): Promise<Resp
         )
         .run();
 
+      // Clean up any athlete names with " (A<id>)" suffixes from this import batch
+      const nameCleanup = await cleanupAthleteNames(env);
+      if (nameCleanup.namesFixed > 0) {
+        console.log(`Cleaned up ${nameCleanup.namesFixed} athlete name(s) with ID suffixes:`, nameCleanup.athletesMerged);
+      }
+
       // Check for duplicate same-day activities (potential naming inconsistencies)
       const duplicates = await detectDuplicateSameDayActivities(env);
       let mappingsRefreshed = false;
@@ -512,7 +604,12 @@ export async function importParkrunCSV(request: Request, env: Env): Promise<Resp
           mappingsUpdated,
           resultsRemapped,
           resultsDeletedFromMapping: resultsDeleted,
-          duplicateDetails: duplicates.slice(0, 10), // Return first 10 for debugging
+          duplicateDetails: duplicates.slice(0, 10),
+          athleteNameCleanup: {
+            namesFixed: nameCleanup.namesFixed,
+            resultsReattributed: nameCleanup.resultsReattributed,
+            merged: nameCleanup.athletesMerged,
+          },
         }),
         {
           headers: {
@@ -631,6 +728,14 @@ function parseCSVLine(line: string): string[] {
   values.push(current.trim());
 
   return values;
+}
+
+/**
+ * Strip parkrun athlete ID suffix from name if present.
+ * parkrun sometimes appends " (A1234567)" to names in CSV exports.
+ */
+export function stripAthleteIdSuffix(name: string): string {
+  return name.replace(/\s+\(A\d+\)\s*$/, '').trim();
 }
 
 /**

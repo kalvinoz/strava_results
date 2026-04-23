@@ -1,6 +1,7 @@
 // API endpoint for importing individual athlete parkrun results
 
 import { Env } from '../types';
+import { stripAthleteIdSuffix, cleanupAthleteNames } from './parkrun-import';
 
 interface CSVRow {
   [key: string]: string;
@@ -105,8 +106,8 @@ export async function importIndividualParkrunCSV(request: Request, env: Env): Pr
         const ageGrade = row['Age Grade'] || row.ageGrade || row['age grade'] || null;
         const runNumber = parseInt(row['Run Number'] || row.runNumber || row['run number'] || '0');
 
-        // Get athlete info from row or form data
-        const rowAthleteName = row.parkrunner || row.Parkrunner || athleteName;
+        // Get athlete info from row or form data; strip any " (A1234567)" suffix parkrun appends
+        const rowAthleteName = stripAthleteIdSuffix((row.parkrunner || row.Parkrunner || athleteName || '') as string);
         const rowParkrunId = row['Parkrun ID'] || row.parkrunId || parkrunAthleteId;
 
         if (!date || !eventName || !timeString || !rowAthleteName) {
@@ -351,13 +352,14 @@ export async function importIndividualParkrunCSV(request: Request, env: Env): Pr
         await logAthleteChanges(env, auditEntries);
       }
 
-      // Update parkrun_athletes table with dates and left status
+      // Update parkrun_athletes table with dates, left status, and parkrun athlete ID
       await env.DB.prepare(
         `INSERT INTO parkrun_athletes
-         (athlete_name, has_left_club, last_club_run_date, last_individual_run_date,
+         (athlete_name, parkrun_athlete, has_left_club, last_club_run_date, last_individual_run_date,
           left_club_detected_at, is_hidden)
-         VALUES (?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(athlete_name) DO UPDATE SET
+           parkrun_athlete = excluded.parkrun_athlete,
            last_club_run_date = excluded.last_club_run_date,
            last_individual_run_date = excluded.last_individual_run_date,
            has_left_club = excluded.has_left_club,
@@ -370,6 +372,7 @@ export async function importIndividualParkrunCSV(request: Request, env: Env): Pr
       )
         .bind(
           athleteNameToUse,
+          parkrunAthleteId,
           hasLeftClub ? 1 : 0,
           lastClubRun?.last_date || null,
           lastIndividualRun?.last_date || null,
@@ -377,6 +380,12 @@ export async function importIndividualParkrunCSV(request: Request, env: Env): Pr
           hasLeftClub ? 1 : 0 // Auto-hide if they left
         )
         .run();
+
+      // Clean up any athlete names with " (A<id>)" suffixes
+      const nameCleanup = await cleanupAthleteNames(env);
+      if (nameCleanup.namesFixed > 0) {
+        console.log(`Cleaned up ${nameCleanup.namesFixed} athlete name(s) with ID suffixes:`, nameCleanup.athletesMerged);
+      }
 
       return new Response(
         JSON.stringify({
@@ -391,6 +400,11 @@ export async function importIndividualParkrunCSV(request: Request, env: Env): Pr
           has_left_club: hasLeftClub,
           last_club_run_date: lastClubRun?.last_date || null,
           last_individual_run_date: lastIndividualRun?.last_date || null,
+          athleteNameCleanup: {
+            namesFixed: nameCleanup.namesFixed,
+            resultsReattributed: nameCleanup.resultsReattributed,
+            merged: nameCleanup.athletesMerged,
+          },
         }),
         {
           headers: {

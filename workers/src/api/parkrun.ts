@@ -1,6 +1,7 @@
 // API endpoints for fetching parkrun data
 
 import { Env } from '../types';
+import { cleanupAthleteNames } from './parkrun-import';
 
 /**
  * GET /api/parkrun - Get parkrun results with filtering
@@ -866,6 +867,46 @@ export async function getParkrunMilestones(request: Request, env: Env): Promise<
     return new Response(
       JSON.stringify({
         error: 'Failed to fetch parkrun milestones',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      }),
+      {
+        status: 500,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        },
+      }
+    );
+  }
+}
+
+/**
+ * POST /api/parkrun/cleanup-athlete-names - Clean up athlete names with ID suffixes
+ * Finds names like "Alan BRNABIC (A5141949)" and merges them into "Alan BRNABIC",
+ * re-attributing all parkrun_results rows and updating parkrun_athletes accordingly.
+ */
+export async function cleanupParkrunAthleteNames(request: Request, env: Env): Promise<Response> {
+  try {
+    const result = await cleanupAthleteNames(env);
+    return new Response(
+      JSON.stringify({
+        success: true,
+        namesFixed: result.namesFixed,
+        resultsReattributed: result.resultsReattributed,
+        merged: result.athletesMerged,
+      }),
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        },
+      }
+    );
+  } catch (error) {
+    console.error('Error cleaning up athlete names:', error);
+    return new Response(
+      JSON.stringify({
+        error: 'Failed to clean up athlete names',
         message: error instanceof Error ? error.message : 'Unknown error',
       }),
       {
