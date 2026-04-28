@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Parkrun Athlete Data Audit
 // @namespace    http://tampermonkey.net/
-// @version      1.1
+// @version      1.2
 // @description  Audits athlete run counts against the database and imports missing runs
 // @author       Woodstock Results
 // @match        https://www.parkrun.com/parkrunner/*/
@@ -38,7 +38,7 @@
         #pr-audit-btn {
             position: fixed;
             bottom: 20px;
-            right: 20px;
+            left: 20px;
             z-index: 9999;
             padding: 12px 20px;
             background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%);
@@ -106,8 +106,8 @@
         }
 
         #pr-audit-panel {
-            position: fixed; bottom: 70px; right: 20px;
-            z-index: 9998; width: 340px;
+            position: fixed; bottom: 70px; left: 20px;
+            z-index: 9998; width: 420px;
             background: white; border-radius: 12px;
             box-shadow: 0 4px 20px rgba(0,0,0,0.15);
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -254,11 +254,28 @@
 
     // Extract athlete name from the summary page
     function getPageAthleteName() {
-        // The heading is e.g. "Meru SHEEL (A703426)" — strip the ID suffix
-        const h1 = document.querySelector('h1, .athletics-ath-name, [class*="athleteName"]');
-        if (h1) return h1.textContent.replace(/\s*\(A\d+\)\s*$/, '').trim();
-        // Fallback: grab from title
-        return document.title.replace(/\s*[-|].*$/, '').trim();
+        // parkrun.com.au shows the name as the first <h1> on the page,
+        // e.g. "Meru SHEEL (A703426)" — strip the ID suffix.
+        // Avoid grabbing nav/header elements by taking the first h1 inside main content.
+        const candidates = [
+            document.querySelector('main h1'),
+            document.querySelector('article h1'),
+            document.querySelector('.ath-header h1'),
+            document.querySelector('h1.athlete-name'),
+            // parkrun.com.au wraps it in a div with class containing "name"
+            document.querySelector('[class*="name"] h1'),
+            document.querySelector('[class*="Name"] h1'),
+            // Last resort: first h1 on the page
+            document.querySelector('h1'),
+        ];
+        for (const el of candidates) {
+            if (!el) continue;
+            const text = el.textContent.replace(/[\s ]*\(A\d+\)[\s ]*$/, '').trim();
+            // Reject if it looks like a nav item or page title (too short or generic)
+            if (text && text.length > 3 && !text.toLowerCase().includes('parkrun')) return text;
+        }
+        // Fallback: page title is usually "FirstName LASTNAME | parkrun"
+        return document.title.split(/[|\-–]/)[0].trim();
     }
 
     // Fetch DB run count for an athlete directly from parkrun_results by parkrun_athlete_id.
