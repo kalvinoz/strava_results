@@ -881,6 +881,39 @@ export async function getParkrunMilestones(request: Request, env: Env): Promise<
 }
 
 /**
+ * GET /api/parkrun/count-by-athlete-id?parkrun_athlete_id=703426
+ * Returns the number of results in the DB for a given parkrun athlete ID.
+ * Used by the audit script to verify counts without relying on athlete_name matching.
+ */
+export async function getParkrunCountByAthleteId(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const parkrunAthleteId = url.searchParams.get('parkrun_athlete_id');
+
+  if (!parkrunAthleteId) {
+    return new Response(JSON.stringify({ error: 'parkrun_athlete_id is required' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+    });
+  }
+
+  try {
+    const result = await env.DB.prepare(
+      `SELECT COUNT(*) as count FROM parkrun_results WHERE parkrun_athlete_id = ?`
+    ).bind(parkrunAthleteId).first<{ count: number }>();
+
+    return new Response(
+      JSON.stringify({ count: result?.count ?? 0, parkrun_athlete_id: parkrunAthleteId }),
+      { headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } }
+    );
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ error: 'Failed to count results', message: error instanceof Error ? error.message : 'Unknown error' }),
+      { status: 500, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } }
+    );
+  }
+}
+
+/**
  * POST /api/parkrun/cleanup-athlete-names - Clean up athlete names with ID suffixes
  * Finds names like "Alan BRNABIC (A5141949)" and merges them into "Alan BRNABIC",
  * re-attributing all parkrun_results rows and updating parkrun_athletes accordingly.

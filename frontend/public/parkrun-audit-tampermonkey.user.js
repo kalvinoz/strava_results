@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Parkrun Athlete Data Audit
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  Audits athlete run counts against the database and imports missing runs
 // @author       Woodstock Results
 // @match        https://www.parkrun.com/parkrunner/*/
@@ -261,14 +261,14 @@
         return document.title.replace(/\s*[-|].*$/, '').trim();
     }
 
-    // Fetch DB run count for an athlete from our API
+    // Fetch DB run count for an athlete directly from parkrun_results by parkrun_athlete_id.
+    // Queries the dedicated endpoint which counts rows by parkrun_athlete_id — reliable
+    // both before and after import, regardless of name matching.
     async function getDbRunCount(athleteId) {
-        // Use the athletes list and find matching parkrun_athlete id
-        const resp = await fetch(`${API_BASE}/api/parkrun/athletes`);
-        if (!resp.ok) throw new Error(`Athletes API error: ${resp.status}`);
+        const resp = await fetch(`${API_BASE}/api/parkrun/count-by-athlete-id?parkrun_athlete_id=${encodeURIComponent(athleteId)}`);
+        if (!resp.ok) throw new Error(`Count API error: ${resp.status}`);
         const data = await resp.json();
-        const athlete = (data.athletes || []).find(a => a.parkrun_athlete === athleteId || a.parkrun_athlete === `A${athleteId}`);
-        return athlete ? { count: athlete.run_count, name: athlete.athlete_name, found: true } : { count: 0, name: null, found: false };
+        return { count: data.count ?? 0, name: null, found: (data.count ?? 0) > 0 };
     }
 
     // Navigate to the /all/ page, scrape the CSV and import it
