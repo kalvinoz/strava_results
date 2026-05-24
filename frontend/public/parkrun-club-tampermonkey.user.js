@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Parkrun Club Results Scraper
 // @namespace    http://tampermonkey.net/
-// @version      2.0
+// @version      2.1
 // @description  Scrapes Woodstock Runners parkrun club results - auto-starts on weekends, or click the floating button
 // @author       Woodstock Results
 // @match        https://www.parkrun.com/results/consolidatedclub/*
@@ -18,6 +18,8 @@
     const STORAGE_KEY = 'parkrun_club_scraper_config';
     const API_KEY_STORAGE = 'parkrun_scraper_api_key';
     const SCRIPT_URL = 'https://woodstock-results.pages.dev/parkrun-smart-scraper.js';
+    const SPECIAL_DATES_URL = 'https://woodstock-results.pages.dev/parkrun-special-dates.json';
+    const SPECIAL_DATES_CACHE_KEY = 'parkrun_special_dates_cache';
 
     // ─── Styles ─────────────────────────────────────────────────────────────────
 
@@ -382,61 +384,117 @@
         panelLog(msg, type);
     }
 
-    // ─── Date helpers ───────────────────────────────────────────────────────────
+    // ─── Special dates loader ────────────────────────────────────────────────────
+    // All special-event date logic is driven by parkrun-special-dates.json.
+    // To add/update special dates: edit that JSON file only — no script changes needed.
 
-    // Returns the most recent parkrun date (Saturday, Dec 25, or Jan 1) relative to today.
-    // Used for both the default date in the modal AND the auto-start trigger.
-    function getMostRecentParkrunDate() {
-        const today = new Date();
-        const day   = today.getDay(); // 0=Sun … 6=Sat
-        const month = today.getMonth() + 1;
-        const date  = today.getDate();
-        const year  = today.getFullYear();
-
-        // Christmas Day parkrun: scrape on Dec 25 or Dec 26
-        if (month === 12 && (date === 25 || date === 26)) {
-            return `${year}-12-25`;
+    async function loadSpecialDatesData() {
+        try {
+            const cached = sessionStorage.getItem(SPECIAL_DATES_CACHE_KEY);
+            if (cached) return JSON.parse(cached);
+        } catch (_) {}
+        try {
+            const resp = await fetch(SPECIAL_DATES_URL);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json();
+            try { sessionStorage.setItem(SPECIAL_DATES_CACHE_KEY, JSON.stringify(data)); } catch (_) {}
+            return data;
+        } catch (err) {
+            console.warn('⚠️  Could not load special dates:', err.message, '— using Saturday/Christmas/NYD fallback');
+            return null;
         }
-
-        // New Year's Day parkrun: scrape on Jan 1 or Jan 2
-        if (month === 1 && (date === 1 || date === 2)) {
-            return `${year}-01-01`;
-        }
-
-        // Saturday: today is parkrun day
-        if (day === 6) {
-            return today.toISOString().split('T')[0];
-        }
-
-        // Sunday: yesterday's Saturday parkrun
-        if (day === 0) {
-            const yesterday = new Date(today);
-            yesterday.setDate(yesterday.getDate() - 1);
-            return yesterday.toISOString().split('T')[0];
-        }
-
-        // Mon–Fri: walk back to most recent Saturday
-        // day=1(Mon)→6 days back, day=2(Tue)→7…nope. Saturday is day 6.
-        // days to subtract: Mon=2, Tue=3, Wed=4, Thu=5, Fri=6 → (day + 1) % 7 is wrong
-        // correct: day-6 is negative, so daysBack = day - 6 + 7 = day + 1 (Mon=2,Tue=3…Fri=7)
-        // but simpler: just walk back day - 6 + 7
-        const sat = new Date(today);
-        sat.setDate(sat.getDate() - (day + 1)); // Mon(1): -2 → last Sat ✓
-        return sat.toISOString().split('T')[0];
     }
 
-    // Whether today is the day OF or the day AFTER a parkrun event
-    // (used for auto-start — only run automatically on parkrun day or the day after)
-    function isAutoStartDay() {
-        const today = new Date();
-        const day   = today.getDay();
-        const month = today.getMonth() + 1;
-        const date  = today.getDate();
+    // Build a flat sorted Set of all active special-event date strings from the JSON.
+    function buildSpecialDateSet(data) {
+        const set = new Set();
+        if (!data) return set;
+        for (const event of Object.values(data.global || {})) {
+            for (const d of (event.dates || [])) set.add(d);
+        }
+        for (const country of Object.values(data.countries || {})) {
+            for (const event of (country.special_events || [])) {
+                if (!event.active) continue;
+                for (const d of (event.dates || [])) set.add(d);
+            }
+        }
+        return set;
+    }
 
-        // Saturday, Sunday, Dec 25, Dec 26, Jan 1, Jan 2
-        if (day === 6 || day === 0) return true;
-        if (month === 12 && (date === 25 || date === 26)) return true;
-        if (month === 1  && (date === 1  || date === 2))  return true;
+    // ─── Date helpers ───────────────────────────────────────────────────────────
+
+    // Format a Date object as YYYY-MM-DD (UTC)
+    function fmtDate(d) {
+        return d.getUTCFullYear() + '-' +
+            String(d.getUTCMonth() + 1).padStart(2, '0') + '-' +
+            String(d.getUTCDate()).padStart(2, '0');
+    }
+
+    // Walk backwards from today (UTC) to find the most recent Saturday
+    function lastSaturday() {
+        const now = new Date();
+        const todayUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+        const dow = new Date(todayUTC).getUTCDay(); // 0=Sun … 6=Sat
+        const daysBack = dow === 6 ? 0 : (dow + 1); // Sat=0, Sun=1, Mon=2 … Fri=6
+        return new Date(todayUTC - daysBack * 86400000);
+    }
+
+    // Returns today's date string (UTC) as YYYY-MM-DD
+    function todayUTCStr() {
+        return fmtDate(new Date(Date.UTC(
+            new Date().getUTCFullYear(),
+            new Date().getUTCMonth(),
+            new Date().getUTCDate()
+        )));
+    }
+
+    // Returns yesterday's date string (UTC)
+    function yesterdayUTCStr() {
+        const d = new Date();
+        return fmtDate(new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - 1)));
+    }
+
+    // Returns the most recent parkrun date relative to today.
+    // Checks: today or yesterday in the special dates set, then falls back to last Saturday.
+    // specialDateSet may be null — falls back to Christmas + NYD check only.
+    function getMostRecentParkrunDate(specialDateSet) {
+        const today = todayUTCStr();
+        const yesterday = yesterdayUTCStr();
+
+        if (specialDateSet) {
+            // If today or yesterday is a special event day, that's the most recent date
+            if (specialDateSet.has(today))     return today;
+            if (specialDateSet.has(yesterday)) return yesterday;
+        } else {
+            // Fallback: hardcoded Christmas and New Year's
+            const [y, m, d] = today.split('-').map(Number);
+            if (m === 12 && (d === 25 || d === 26)) return `${y}-12-25`;
+            if (m ===  1 && (d ===  1 || d ===  2)) return `${y}-01-01`;
+            const [py, pm, pd] = yesterday.split('-').map(Number);
+            if (pm === 12 && pd === 25) return `${py}-12-25`;
+            if (pm ===  1 && pd ===  1) return `${py}-01-01`;
+        }
+
+        // Default: most recent Saturday
+        return fmtDate(lastSaturday());
+    }
+
+    // Whether today (or yesterday) is a parkrun special event day — used for auto-start.
+    // Always auto-starts on Saturday (regular day) and Sunday (day after Saturday).
+    function isAutoStartDay(specialDateSet) {
+        const dow = new Date().getUTCDay();
+        if (dow === 6 || dow === 0) return true; // Saturday or Sunday
+
+        const today = todayUTCStr();
+        const yesterday = yesterdayUTCStr();
+
+        if (specialDateSet) {
+            return specialDateSet.has(today) || specialDateSet.has(yesterday);
+        }
+        // Fallback
+        const [y, m, d] = today.split('-').map(Number);
+        if (m === 12 && (d === 25 || d === 26)) return true;
+        if (m ===  1 && (d ===  1 || d ===  2)) return true;
         return false;
     }
 
@@ -457,9 +515,9 @@
 
     // ─── Config modal ───────────────────────────────────────────────────────────
 
-    function showConfigModal(apiKey) {
-        const defaultDate = getMostRecentParkrunDate();
-        const isDefaultParkrunDay = isAutoStartDay();
+    function showConfigModal(apiKey, specialDateSet) {
+        const defaultDate = getMostRecentParkrunDate(specialDateSet);
+        const isDefaultParkrunDay = isAutoStartDay(specialDateSet);
 
         const modal = document.createElement('div');
         modal.id = 'parkrun-club-modal';
@@ -613,20 +671,22 @@
         setTimeout(() => {
             button.textContent = '🏃 Scrape Club Results';
             button.className = '';
-            button.onclick = openModal;
+            button.onclick = openModal; // openModal loads special dates lazily
             hidePanel();
         }, delayMs);
     }
 
-    function openModal() {
+    async function openModal() {
         const apiKey = getApiKey();
         if (!apiKey) return;
-        showConfigModal(apiKey);
+        const data = await loadSpecialDatesData();
+        const specialDateSet = buildSpecialDateSet(data);
+        showConfigModal(apiKey, specialDateSet);
     }
 
     // ─── Initial state ──────────────────────────────────────────────────────────
 
-    // Resuming a scrape that was already started (page reload mid-scrape)
+    // Resuming a scrape already in progress (page reload mid-scrape) — no async needed
     const storedConfig = sessionStorage.getItem(STORAGE_KEY);
     if (storedConfig) {
         const config = JSON.parse(storedConfig);
@@ -638,38 +698,46 @@
             }
         };
         startScraper(config);
-        return; // skip auto-start check below
-    }
+        // (no return — let async init run in background, it won't interfere)
+    } else {
+        // Load special dates then decide: auto-start or wait for button click
+        (async () => {
+            const data = await loadSpecialDatesData();
+            const specialDateSet = buildSpecialDateSet(data);
 
-    // Auto-start if API key is saved AND today is a parkrun day (or the day after)
-    const savedApiKey = localStorage.getItem(API_KEY_STORAGE);
-    if (savedApiKey && isAutoStartDay()) {
-        const parkrunDate = getMostRecentParkrunDate();
-        const config = {
-            startDate:   parkrunDate,
-            endDate:     parkrunDate,
-            replaceMode: false,
-            apiEndpoint: 'https://strava-club-workers.pedroqueiroz.workers.dev/api/parkrun/import',
-            apiKey:      savedApiKey,
-            clubNum:     CLUB_NUM,
-            active:      true
-        };
+            const savedApiKey = localStorage.getItem(API_KEY_STORAGE);
+            if (savedApiKey && isAutoStartDay(specialDateSet)) {
+                const parkrunDate = getMostRecentParkrunDate(specialDateSet);
+                const config = {
+                    startDate:   parkrunDate,
+                    endDate:     parkrunDate,
+                    replaceMode: false,
+                    apiEndpoint: 'https://strava-club-workers.pedroqueiroz.workers.dev/api/parkrun/import',
+                    apiKey:      savedApiKey,
+                    clubNum:     CLUB_NUM,
+                    active:      true
+                };
 
-        sessionStorage.setItem(STORAGE_KEY, JSON.stringify(config));
-        button.textContent = '🔄 Auto-scraping...';
-        button.classList.add('active');
-        button.onclick = function() {
-            if (confirm('Stop the auto-scraper?')) {
-                window.stopParkrunScraper = true;
+                sessionStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+                button.textContent = '🔄 Auto-scraping...';
+                button.classList.add('active');
+                button.onclick = function() {
+                    if (confirm('Stop the auto-scraper?')) {
+                        window.stopParkrunScraper = true;
+                    }
+                };
+
+                panelLog(`Auto-starting for parkrun date: ${parkrunDate}`, 'info');
+                startScraper(config);
+            } else {
+                // Wire up button with special dates already loaded (fast modal open)
+                button.onclick = () => {
+                    const apiKey = getApiKey();
+                    if (!apiKey) return;
+                    showConfigModal(apiKey, specialDateSet);
+                };
             }
-        };
-
-        panelLog(`Auto-starting for parkrun date: ${parkrunDate}`, 'info');
-        startScraper(config);
-        return;
+        })();
     }
-
-    // Default: show the button ready to click
-    button.onclick = openModal;
 
 })();

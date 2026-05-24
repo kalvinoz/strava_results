@@ -23,7 +23,7 @@
 
 (async function() {
   console.clear();
-  console.log('🏃 Parkrun Smart Scraper v4.3');
+  console.log('🏃 Parkrun Smart Scraper v4.4');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
   // Global stop flag
@@ -104,30 +104,71 @@
   }
 
   /**
-   * Get special parkrun dates (Christmas Day and New Year's Day) within range
-   * Parkrun often runs on these days even though they're not Saturdays
+   * Get special parkrun dates within range, loaded from parkrun-special-dates.json.
+   * Falls back to hardcoded Christmas + New Year's Day if the fetch fails.
+   *
+   * To add new special dates: edit parkrun-special-dates.json only — no script changes needed.
    */
-  function getSpecialParkrunDates(startDate, endDate) {
-    const specialDates = [];
-    const startYear = parseInt(startDate.split('-')[0]);
-    const endYear = parseInt(endDate.split('-')[0]);
+  const SPECIAL_DATES_URL = 'https://woodstock-results.pages.dev/parkrun-special-dates.json';
+  const SPECIAL_DATES_CACHE_KEY = 'parkrun_special_dates_cache';
 
-    // Generate Christmas (Dec 25) and New Year (Jan 1) for each year in range
-    for (let year = startYear; year <= endYear; year++) {
-      // Christmas Day
-      const christmas = `${year}-12-25`;
-      if (christmas >= startDate && christmas <= endDate) {
-        specialDates.push(christmas);
+  async function loadSpecialDatesData() {
+    // Try sessionStorage cache first (valid for the browser session)
+    try {
+      const cached = sessionStorage.getItem(SPECIAL_DATES_CACHE_KEY);
+      if (cached) return JSON.parse(cached);
+    } catch (_) {}
+
+    try {
+      const resp = await fetch(SPECIAL_DATES_URL);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      try { sessionStorage.setItem(SPECIAL_DATES_CACHE_KEY, JSON.stringify(data)); } catch (_) {}
+      return data;
+    } catch (err) {
+      console.warn(`⚠️  Could not load special dates from ${SPECIAL_DATES_URL}: ${err.message}`);
+      console.warn('   Falling back to hardcoded Christmas + New Year\'s Day only');
+      return null;
+    }
+  }
+
+  async function getSpecialParkrunDates(startDate, endDate) {
+    const data = await loadSpecialDatesData();
+
+    if (!data) {
+      // Fallback: Christmas and New Year's only
+      const specialDates = [];
+      const startYear = parseInt(startDate.split('-')[0]);
+      const endYear   = parseInt(endDate.split('-')[0]);
+      for (let year = startYear; year <= endYear; year++) {
+        for (const d of [`${year}-12-25`, `${year}-01-01`]) {
+          if (d >= startDate && d <= endDate) specialDates.push(d);
+        }
       }
+      return specialDates;
+    }
 
-      // New Year's Day
-      const newYear = `${year}-01-01`;
-      if (newYear >= startDate && newYear <= endDate) {
-        specialDates.push(newYear);
+    // Collect all active special-event dates that fall within the range
+    const dateSet = new Set();
+
+    // Global dates (New Year's Day)
+    for (const event of Object.values(data.global || {})) {
+      for (const d of (event.dates || [])) {
+        if (d >= startDate && d <= endDate) dateSet.add(d);
       }
     }
 
-    return specialDates;
+    // Per-country dates (active events only)
+    for (const country of Object.values(data.countries || {})) {
+      for (const event of (country.special_events || [])) {
+        if (!event.active) continue;
+        for (const d of (event.dates || [])) {
+          if (d >= startDate && d <= endDate) dateSet.add(d);
+        }
+      }
+    }
+
+    return [...dateSet].sort();
   }
 
   function sleep(ms) {
@@ -459,16 +500,23 @@
   console.log('💡 To stop the scraper at any time, run: window.stopParkrunScraper = true');
   console.log('');
 
-  // Get all dates to scrape (Saturdays + special dates like Christmas/New Year)
+  // Get all dates to scrape (Saturdays + special dates from parkrun-special-dates.json)
   const saturdays = getSaturdaysInRange(CONFIG.startDate, CONFIG.endDate);
-  const specialDates = getSpecialParkrunDates(CONFIG.startDate, CONFIG.endDate);
+  const specialDates = await getSpecialParkrunDates(CONFIG.startDate, CONFIG.endDate);
+
+  // Exclude Saturdays from special dates count (they're already in the Saturday list)
+  const specialOnly = specialDates.filter(d => {
+    const [y, m, day] = d.split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, day)).getUTCDay() !== 6;
+  });
 
   const allDates = [...new Set([...saturdays, ...specialDates])].sort().reverse();
 
   console.log(`📅 Dates to scrape: ${allDates.length} days`);
   console.log(`   - Saturdays: ${saturdays.length}`);
-  if (specialDates.length > 0) {
-    console.log(`   - Special dates (Christmas/New Year): ${specialDates.length}`);
+  if (specialOnly.length > 0) {
+    console.log(`   - Special dates (non-Saturday): ${specialOnly.length}`);
+    specialOnly.forEach(d => console.log(`     • ${d}`));
   }
   console.log('');
 
