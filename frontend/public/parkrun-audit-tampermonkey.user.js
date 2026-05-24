@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Parkrun Athlete Data Audit
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.3
 // @description  Audits athlete run counts against the database and imports missing runs
 // @author       Woodstock Results
 // @match        https://www.parkrun.com/parkrunner/*/
@@ -444,7 +444,7 @@
         if (!resp.ok) throw new Error(`Athletes API error: ${resp.status}`);
         const data = await resp.json();
 
-        const athletes = (data.athletes || []).filter(a => !a.is_hidden && a.parkrun_athlete);
+        const athletes = (data.athletes || []).filter(a => !a.is_hidden && a.parkrun_athlete_id);
         stat('pa-total', athletes.length);
         log(`Found ${athletes.length} athletes to audit`, 'info');
 
@@ -453,7 +453,7 @@
         for (const athlete of athletes) {
             if (stopped) break;
 
-            const id = (athlete.parkrun_athlete || '').replace(/^A/, '');
+            const id = (athlete.parkrun_athlete_id || '').replace(/^A/, '');
             setCur(`${athlete.athlete_name} (${id})`);
 
             try {
