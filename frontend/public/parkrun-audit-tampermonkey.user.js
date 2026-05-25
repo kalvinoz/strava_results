@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Parkrun Athlete Data Audit
 // @namespace    http://tampermonkey.net/
-// @version      1.5
+// @version      1.6
 // @description  Audits athlete run counts against the database and imports missing runs
 // @author       Woodstock Results
 // @match        https://www.parkrun.com/parkrunner/*/
@@ -154,6 +154,31 @@
         #pr-audit-panel .log .err  { color: #f87171; }
         #pr-audit-panel .log .info { color: #60a5fa; }
         #pr-audit-panel .log .warn { color: #fbbf24; }
+
+        #pr-audit-panel .summary { margin-top: 10px; }
+        #pr-audit-panel .summary-toggle {
+            font-size: 11px; color: #888; cursor: pointer;
+            text-align: right; margin-bottom: 6px; user-select: none;
+        }
+        #pr-audit-panel .summary-toggle:hover { color: #555; }
+        #pr-audit-panel .summary-section { margin-bottom: 8px; }
+        #pr-audit-panel .summary-section-title {
+            font-size: 11px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.05em; margin-bottom: 4px; padding: 4px 8px;
+            border-radius: 4px;
+        }
+        #pr-audit-panel .summary-section-title.fixed { background: #dcfce7; color: #15803d; }
+        #pr-audit-panel .summary-section-title.error { background: #fee2e2; color: #b91c1c; }
+        #pr-audit-panel .summary-row {
+            display: flex; justify-content: space-between; align-items: baseline;
+            font-size: 12px; padding: 4px 8px; border-radius: 4px;
+        }
+        #pr-audit-panel .summary-row:nth-child(even) { background: #f9f9f9; }
+        #pr-audit-panel .summary-row .sr-name { font-weight: 600; color: #333; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        #pr-audit-panel .summary-row .sr-detail { font-size: 11px; color: #666; white-space: nowrap; margin-left: 8px; }
+        #pr-audit-panel .summary-row .sr-detail.fixed { color: #15803d; }
+        #pr-audit-panel .summary-row .sr-detail.error { color: #b91c1c; }
+        #pr-audit-panel .summary-empty { font-size: 12px; color: #888; padding: 4px 8px; }
     `);
 
     // ─── UI elements ─────────────────────────────────────────────────────────────
@@ -229,6 +254,92 @@
 
     function showPanel() { panel.style.display = 'block'; }
     function hidePanel() { panel.style.display = 'none'; }
+
+    // ─── Summary renderer ────────────────────────────────────────────────────────
+    // Called after audit completes. Appends a summary below the log showing
+    // fixed athletes and error athletes with reasons.
+    // auditLog: [{ name, id, status, reason, pageTotal, dbBefore, dbAfter }]
+
+    function showSummary(auditLog) {
+        // Remove any previous summary
+        const prev = document.getElementById('pa-summary');
+        if (prev) prev.remove();
+
+        const fixed  = auditLog.filter(r => r.status === 'fixed');
+        const errors = auditLog.filter(r => r.status === 'error');
+
+        // Nothing interesting to show if everything was OK and nothing fixed
+        if (fixed.length === 0 && errors.length === 0) return;
+
+        const pb = panel.querySelector('.pb');
+
+        const summary = document.createElement('div');
+        summary.id = 'pa-summary';
+        summary.className = 'summary';
+
+        // Toggle to show/hide the live log (so summary has breathing room)
+        const logEl = document.getElementById('pa-log');
+        const toggle = document.createElement('div');
+        toggle.className = 'summary-toggle';
+        toggle.textContent = '▲ hide log';
+        let logVisible = true;
+        toggle.addEventListener('click', () => {
+            logVisible = !logVisible;
+            logEl.style.display = logVisible ? '' : 'none';
+            toggle.textContent = logVisible ? '▲ hide log' : '▼ show log';
+        });
+        summary.appendChild(toggle);
+
+        // Helper to build a section
+        function section(titleText, titleClass, rows) {
+            if (rows.length === 0) return;
+            const sec = document.createElement('div');
+            sec.className = 'summary-section';
+
+            const title = document.createElement('div');
+            title.className = `summary-section-title ${titleClass}`;
+            title.textContent = titleText;
+            sec.appendChild(title);
+
+            for (const r of rows) {
+                const row = document.createElement('div');
+                row.className = 'summary-row';
+
+                const name = document.createElement('span');
+                name.className = 'sr-name';
+                name.title = r.name; // full name on hover
+                name.textContent = r.name;
+
+                const detail = document.createElement('span');
+                detail.className = `sr-detail ${titleClass}`;
+
+                if (r.status === 'fixed') {
+                    detail.textContent = `${r.dbBefore} → ${r.dbAfter} runs`;
+                } else {
+                    // Error: show what we know
+                    if (r.pageTotal === null) {
+                        detail.textContent = r.reason || 'fetch failed';
+                    } else if (r.dbAfter !== null) {
+                        detail.textContent = `db=${r.dbAfter}, web=${r.pageTotal}`;
+                    } else {
+                        detail.textContent = r.reason || 'unknown error';
+                    }
+                }
+
+                row.appendChild(name);
+                row.appendChild(detail);
+                sec.appendChild(row);
+            }
+            return sec;
+        }
+
+        const fixedSec = section(`✅ Fixed (${fixed.length})`,  'fixed', fixed);
+        const errorSec = section(`❌ Errors (${errors.length})`, 'error', errors);
+        if (fixedSec) summary.appendChild(fixedSec);
+        if (errorSec) summary.appendChild(errorSec);
+
+        pb.appendChild(summary);
+    }
 
     function getApiKey() {
         let key = localStorage.getItem(API_KEY_STORAGE);
@@ -445,7 +556,7 @@
 
         if (pageTotal === null) {
             log(`  ❌ Could not read run count from parkrun.com`, 'err');
-            return 'error';
+            return { status: 'error', reason: 'Could not fetch parkrun.com page', pageTotal: null, dbBefore: null, dbAfter: null };
         }
         log(`  parkrun.com total: ${pageTotal}`, 'info');
 
@@ -456,7 +567,7 @@
 
         if (db.count === pageTotal) {
             log(`  ✅ In sync`, 'ok');
-            return 'ok';
+            return { status: 'ok', pageTotal, dbBefore: db.count, dbAfter: db.count };
         }
 
         // 3. Counts differ — import full history from /all/ page
@@ -471,11 +582,11 @@
 
         if (db2.count !== pageTotal) {
             log(`  ❌ Still mismatched after import`, 'err');
-            return 'error';
+            return { status: 'error', reason: `DB has ${db2.count}, parkrun.com has ${pageTotal} after import`, pageTotal, dbBefore: db.count, dbAfter: db2.count };
         }
 
         log(`  ✅ Fixed`, 'ok');
-        return 'fixed';
+        return { status: 'fixed', pageTotal, dbBefore: db.count, dbAfter: db2.count };
     }
 
     // ─── Run audit for all club athletes ─────────────────────────────────────────
@@ -491,6 +602,7 @@
         log(`Found ${athletes.length} athletes to audit`, 'info');
 
         let done = 0, ok = 0, fixed = 0, errors = 0;
+        const auditLog = []; // { name, id, status, reason, pageTotal, dbBefore, dbAfter }
 
         for (const athlete of athletes) {
             if (stopped) break;
@@ -498,16 +610,19 @@
             const id = (athlete.parkrun_athlete_id || '').replace(/^A/, '');
             setCur(`${athlete.athlete_name} (${id})`);
 
+            let result;
             try {
-                const result = await auditAthlete(id, athlete.athlete_name, apiKey);
-                if (result === 'ok')    { ok++;     stat('pa-ok',    ok); }
-                if (result === 'fixed') { fixed++;  stat('pa-fixed', fixed); }
-                if (result === 'error') { errors++;  stat('pa-err',   errors); }
+                result = await auditAthlete(id, athlete.athlete_name, apiKey);
             } catch (e) {
                 log(`Error auditing ${athlete.athlete_name}: ${e.message}`, 'err');
-                errors++;
-                stat('pa-err', errors);
+                result = { status: 'error', reason: e.message, pageTotal: null, dbBefore: null, dbAfter: null };
             }
+
+            auditLog.push({ name: athlete.athlete_name, id, ...result });
+
+            if (result.status === 'ok')    { ok++;     stat('pa-ok',    ok); }
+            if (result.status === 'fixed') { fixed++;  stat('pa-fixed', fixed); }
+            if (result.status === 'error') { errors++;  stat('pa-err',   errors); }
 
             done++;
             stat('pa-done', done);
@@ -518,6 +633,7 @@
 
         setCur('Done');
         log(`Audit complete: ${ok} ok, ${fixed} fixed, ${errors} errors`, errors > 0 ? 'err' : 'ok');
+        showSummary(auditLog);
         return errors === 0 ? 'ok' : 'error';
     }
 
@@ -566,9 +682,11 @@
             setBtn('running');
             showPanel();
 
-            // Reset stats
+            // Reset stats and clear any previous summary
             ['pa-done','pa-total','pa-ok','pa-fixed','pa-err'].forEach(id => stat(id, 0));
             document.getElementById('pa-log').innerHTML = '';
+            const prevSummary = document.getElementById('pa-summary');
+            if (prevSummary) prevSummary.remove();
 
             let finalResult;
             try {
@@ -576,12 +694,18 @@
                     stat('pa-total', 1);
                     const name = getPageAthleteName();
                     setCur(`${name} (${athleteId})`);
-                    const result = await auditAthlete(athleteId, name, apiKey);
+                    let result;
+                    try {
+                        result = await auditAthlete(athleteId, name, apiKey);
+                    } catch (e) {
+                        result = { status: 'error', reason: e.message, pageTotal: null, dbBefore: null, dbAfter: null };
+                    }
                     stat('pa-done', 1);
-                    if (result === 'ok')    { stat('pa-ok',    1); }
-                    if (result === 'fixed') { stat('pa-fixed', 1); }
-                    if (result === 'error') { stat('pa-err',   1); }
-                    finalResult = result === 'error' ? 'error' : 'ok';
+                    if (result.status === 'ok')    { stat('pa-ok',    1); }
+                    if (result.status === 'fixed') { stat('pa-fixed', 1); }
+                    if (result.status === 'error') { stat('pa-err',   1); }
+                    showSummary([{ name, id: athleteId, ...result }]);
+                    finalResult = result.status === 'error' ? 'error' : 'ok';
                 } else {
                     finalResult = await auditAll(apiKey);
                 }
