@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Parkrun Athlete Data Audit
 // @namespace    http://tampermonkey.net/
-// @version      2.0
+// @version      2.1
 // @description  Audits athlete run counts against the database and imports missing runs
 // @author       Woodstock Results
 // @match        https://www.parkrun.com/parkrunner/*/
@@ -433,9 +433,7 @@
             const resumeBtn = banner.querySelector('.btn-resume');
 
             banner.querySelector('.cap-msg').textContent =
-                reason === '405'
-                    ? 'parkrun rejected the request (session expired or bot check). Open the challenge tab, log in / solve the check, then click Resume.'
-                    : 'parkrun is showing a human-verification page. Open the challenge tab, complete it, then click Resume.';
+                `parkrun returned an unexpected response (${reason}). Open the challenge tab — log in or solve any verification — then click Resume.`;
 
             // Set the link href — clicking it is a real user gesture, always works
             openBtn.href = url;
@@ -674,23 +672,23 @@
                 const resp = await fetch(url, { credentials: 'include' });
                 log(`  ← ${resp.status} for ${label}`, resp.ok ? 'info' : 'warn');
 
-                if (!resp.ok) {
-                    // 4xx/5xx — likely session expired or bot-check; pause and let user fix it
-                    log(`  ⚠ ${resp.status} — pausing for human check on ${label}…`, 'warn');
-                    await waitForHumanCheck(url, '405');
-                    log(`  ↺ Resumed after ${resp.status} — retrying…`, 'info');
-                    attempt--; // don't consume a retry slot for a human-check pause
-                    continue;
-                }
-
                 const html = await resp.text();
 
-                // 200 but body is a CAPTCHA / human-check page
-                if (isCaptchaPage(html)) {
-                    log(`  🤖 Human-check page in response body — pausing…`, 'warn');
-                    await waitForHumanCheck(url, 'captcha');
-                    log(`  ↺ Resumed after CAPTCHA — retrying…`, 'info');
-                    attempt--;
+                // Any of these mean parkrun wants a human check:
+                //  • non-OK status (4xx/5xx, 202 "accepted but not ready", etc.)
+                //  • empty or near-empty body (bot-check redirect with no content)
+                //  • body explicitly contains a CAPTCHA / human-check page
+                const needsHumanCheck =
+                    !resp.ok ||
+                    html.length < 500 ||
+                    isCaptchaPage(html);
+
+                if (needsHumanCheck) {
+                    const reason = !resp.ok ? `HTTP ${resp.status}` : html.length < 500 ? 'empty response' : 'CAPTCHA page';
+                    log(`  🤖 Human check needed (${reason}) — pausing…`, 'warn');
+                    await waitForHumanCheck(url, reason);
+                    log(`  ↺ Resumed — retrying…`, 'info');
+                    attempt--; // don't consume a retry slot for a human-check pause
                     continue;
                 }
 
