@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Parkrun Athlete Data Audit
 // @namespace    http://tampermonkey.net/
-// @version      1.7
+// @version      1.8
 // @description  Audits athlete run counts against the database and imports missing runs
 // @author       Woodstock Results
 // @match        https://www.parkrun.com/parkrunner/*/
@@ -20,6 +20,7 @@
     const API_BASE = 'https://strava-club-workers.pedroqueiroz.workers.dev';
     const ATHLETES_API = `${API_BASE}/api/parkrun/athletes`;
     const IMPORT_API = `${API_BASE}/api/parkrun/import-individual`;
+    const MARK_AUDITED_API = `${API_BASE}/api/parkrun/mark-audited`;
     const API_KEY_STORAGE = 'parkrun_scraper_api_key';
     const AUDIT_STATE_KEY = 'parkrun_audit_state';
 
@@ -399,6 +400,21 @@
         return { count: data.count ?? 0, name: null, found: (data.count ?? 0) > 0 };
     }
 
+    // Record a successful audit timestamp for this athlete in the DB.
+    // Fire-and-forget — failure doesn't affect the audit result.
+    async function markAudited(athleteId, apiKey) {
+        try {
+            const resp = await fetch(MARK_AUDITED_API, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+                body: JSON.stringify({ parkrun_athlete_id: athleteId }),
+            });
+            if (!resp.ok) log(`  ⚠ markAudited failed: ${resp.status}`, 'warn');
+        } catch (e) {
+            log(`  ⚠ markAudited error: ${e.message}`, 'warn');
+        }
+    }
+
     // Navigate to the /all/ page, scrape the CSV and import it
     async function importAllRuns(athleteId, athleteName, apiKey) {
         const allUrl = `${window.location.origin}/parkrunner/${athleteId}/all/`;
@@ -620,6 +636,7 @@
 
         if (db.count === pageTotal) {
             log(`  ✅ In sync`, 'ok');
+            await markAudited(athleteId, apiKey);
             return { status: 'ok', pageTotal, dbBefore: db.count, dbAfter: db.count };
         }
 
@@ -639,6 +656,7 @@
         }
 
         log(`  ✅ Fixed`, 'ok');
+        await markAudited(athleteId, apiKey);
         return { status: 'fixed', pageTotal, dbBefore: db.count, dbAfter: db2.count };
     }
 
@@ -650,9 +668,17 @@
         if (!resp.ok) throw new Error(`Athletes API error: ${resp.status}`);
         const data = await resp.json();
 
-        const athletes = (data.athletes || []).filter(a => !a.is_hidden && a.parkrun_athlete_id);
+        const athletes = (data.athletes || [])
+            .filter(a => !a.is_hidden && a.parkrun_athlete_id)
+            // Never-audited first (null), then oldest audit first
+            .sort((a, b) => {
+                if (a.last_audited_at == null && b.last_audited_at == null) return 0;
+                if (a.last_audited_at == null) return -1;
+                if (b.last_audited_at == null) return  1;
+                return a.last_audited_at - b.last_audited_at;
+            });
         stat('pa-total', athletes.length);
-        log(`Found ${athletes.length} athletes to audit`, 'info');
+        log(`Found ${athletes.length} athletes to audit (${athletes.filter(a => !a.last_audited_at).length} never audited)`, 'info');
 
         let done = 0, ok = 0, fixed = 0, errors = 0;
         const auditLog = []; // { name, id, status, reason, pageTotal, dbBefore, dbAfter }

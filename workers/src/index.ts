@@ -9,7 +9,7 @@ import { healthCheckBatchedSyncs } from './cron/sync-health-monitor';
 import { getRaces, getStats, getAthletes, updateRaceTime, updateRaceDistance, updateRaceEvent, updateRaceVisibility, bulkEditRaces, fetchRaceDescription } from './api/races';
 import { getAdminAthletes, updateAthlete, deleteAthlete, triggerAthleteSync, triggerSyncAll, stopAthleteSync, resetStuckSyncs, getAdminSyncLogs, checkAdmin, getAdminSyncStatus, stopSyncJob, triggerBatchedAthleteSync, getBatchedSyncProgress, getAdminApiKey } from './api/admin';
 import { getReviewActivities, updateActivity } from './api/admin-review';
-import { getParkrunResults, getParkrunStats, getParkrunAthletes, updateParkrunAthlete, getParkrunByDate, getParkrunWeeklySummary, getParkrunDuplicates, getParkrunMilestones, cleanupParkrunAthleteNames, getParkrunCountByAthleteId } from './api/parkrun';
+import { getParkrunResults, getParkrunStats, getParkrunAthletes, updateParkrunAthlete, getParkrunByDate, getParkrunWeeklySummary, getParkrunDuplicates, getParkrunMilestones, cleanupParkrunAthleteNames, getParkrunCountByAthleteId, markAthleteAudited } from './api/parkrun';
 import { importParkrunCSV } from './api/parkrun-import';
 import { importIndividualParkrunCSV } from './api/parkrun-import-individual';
 import { getAthletesToScrape } from './api/parkrun-athletes-to-scrape';
@@ -429,6 +429,12 @@ export default {
 
       if (path === '/api/parkrun/count-by-athlete-id' && request.method === 'GET') {
         return getParkrunCountByAthleteId(request, env);
+      }
+
+      if (path === '/api/parkrun/mark-audited' && request.method === 'POST') {
+        const authError = await requireApiKey(request, env);
+        if (authError) return authError;
+        return markAthleteAudited(request, env);
       }
 
       if (path === '/api/parkrun/cleanup-athlete-names' && request.method === 'POST') {

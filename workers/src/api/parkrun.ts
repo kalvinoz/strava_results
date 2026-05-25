@@ -275,6 +275,7 @@ export async function getParkrunAthletes(request: Request, env: Env): Promise<Re
               pa.has_left_club,
               pa.last_club_run_date,
               pa.last_individual_run_date,
+              pa.last_audited_at,
               (SELECT parkrun_athlete_id FROM parkrun_results WHERE athlete_name = pr.athlete_name AND parkrun_athlete_id IS NOT NULL LIMIT 1) as parkrun_athlete_id,
               COUNT(pr.id) as run_count
        FROM parkrun_results pr
@@ -908,6 +909,73 @@ export async function getParkrunCountByAthleteId(request: Request, env: Env): Pr
   } catch (error) {
     return new Response(
       JSON.stringify({ error: 'Failed to count results', message: error instanceof Error ? error.message : 'Unknown error' }),
+      { status: 500, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } }
+    );
+  }
+}
+
+/**
+ * POST /api/parkrun/mark-audited
+ * Called by the audit script after a successful audit (status 'ok' or 'fixed').
+ * Sets last_audited_at = now on the parkrun_athletes row identified by parkrun_athlete_id.
+ * Requires API key.
+ */
+export async function markAthleteAudited(request: Request, env: Env): Promise<Response> {
+  let body: { parkrun_athlete_id?: string };
+  try {
+    body = await request.json() as { parkrun_athlete_id?: string };
+  } catch {
+    return new Response(JSON.stringify({ error: 'Invalid JSON body' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+    });
+  }
+
+  const { parkrun_athlete_id } = body;
+  if (!parkrun_athlete_id) {
+    return new Response(JSON.stringify({ error: 'parkrun_athlete_id is required' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+    });
+  }
+
+  try {
+    const now = Math.floor(Date.now() / 1000);
+
+    // Update by matching the parkrun_athlete_id stored in parkrun_athletes
+    // (populated via migration 0035 / 0036 from parkrun_results).
+    // If no row exists yet, upsert using the athlete_name from parkrun_results.
+    const result = await env.DB.prepare(
+      `UPDATE parkrun_athletes
+       SET last_audited_at = ?, updated_at = ?
+       WHERE parkrun_athlete = ?`
+    ).bind(now, now, parkrun_athlete_id).run();
+
+    if ((result.meta?.changes ?? 0) === 0) {
+      // Row may not exist in parkrun_athletes yet — try upserting via athlete_name
+      const nameRow = await env.DB.prepare(
+        `SELECT athlete_name FROM parkrun_results WHERE parkrun_athlete_id = ? LIMIT 1`
+      ).bind(parkrun_athlete_id).first<{ athlete_name: string }>();
+
+      if (nameRow) {
+        await env.DB.prepare(
+          `INSERT INTO parkrun_athletes (athlete_name, parkrun_athlete, last_audited_at, updated_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(athlete_name) DO UPDATE SET
+             parkrun_athlete = COALESCE(excluded.parkrun_athlete, parkrun_athlete),
+             last_audited_at = excluded.last_audited_at,
+             updated_at = excluded.updated_at`
+        ).bind(nameRow.athlete_name, parkrun_athlete_id, now, now).run();
+      }
+    }
+
+    return new Response(
+      JSON.stringify({ success: true, parkrun_athlete_id, last_audited_at: now }),
+      { headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } }
+    );
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ error: 'Failed to mark audited', message: error instanceof Error ? error.message : 'Unknown error' }),
       { status: 500, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } }
     );
   }
