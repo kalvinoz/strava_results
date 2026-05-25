@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Parkrun Athlete Data Audit
 // @namespace    http://tampermonkey.net/
-// @version      1.4
+// @version      1.5
 // @description  Audits athlete run counts against the database and imports missing runs
 // @author       Woodstock Results
 // @match        https://www.parkrun.com/parkrunner/*/
@@ -291,12 +291,9 @@
     // Navigate to the /all/ page, scrape the CSV and import it
     async function importAllRuns(athleteId, athleteName, apiKey) {
         const allUrl = `${window.location.origin}/parkrunner/${athleteId}/all/`;
-        log(`Navigating to /all/ page to fetch full history…`, 'info');
+        log(`Fetching /all/ page for ${athleteName} (${athleteId})…`, 'info');
 
-        // Fetch the /all/ page HTML
-        const resp = await fetch(allUrl, { credentials: 'include' });
-        if (!resp.ok) throw new Error(`Failed to fetch /all/ page: ${resp.status}`);
-        const html = await resp.text();
+        const html = await fetchParkrunPage(allUrl, `/all/ for ${athleteId}`);
 
         // Parse the results table out of the HTML
         const csv = parseAllPageToCSV(html, athleteId, athleteName);
@@ -380,60 +377,104 @@
         return { text: lines.join('\n'), rowCount: count };
     }
 
+    // Fetch a parkrun page URL with retries and new-tab fallback on failure.
+    // Returns the response HTML string, or throws after all retries exhausted.
+    async function fetchParkrunPage(url, label, maxRetries = 3) {
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            log(`  → fetching ${label} (attempt ${attempt}/${maxRetries}): ${url}`, 'info');
+            try {
+                const resp = await fetch(url, { credentials: 'include' });
+                log(`  ← ${resp.status} ${resp.statusText || ''} for ${label}`, resp.ok ? 'info' : 'warn');
+                if (resp.ok) return await resp.text();
+
+                // 405 / 4xx — try opening a new tab to refresh the session cookie
+                if (attempt < maxRetries) {
+                    log(`  ⚠ ${resp.status} error — opening new tab to refresh session…`, 'warn');
+                    try {
+                        const tab = window.open(url, '_blank');
+                        if (tab) {
+                            await delay(3000); // give the tab time to load and set cookies
+                            tab.close();
+                            log(`  ↺ session tab closed, retrying…`, 'info');
+                        } else {
+                            log(`  ⚠ could not open tab (popup blocked?) — waiting before retry`, 'warn');
+                            await delay(3000);
+                        }
+                    } catch (tabErr) {
+                        log(`  ⚠ tab open failed: ${tabErr.message}`, 'warn');
+                        await delay(3000);
+                    }
+                } else {
+                    throw new Error(`HTTP ${resp.status} after ${maxRetries} attempts`);
+                }
+            } catch (err) {
+                if (attempt === maxRetries) throw err;
+                log(`  ⚠ fetch error: ${err.message} — waiting before retry`, 'warn');
+                await delay(3000 * attempt);
+            }
+        }
+    }
+
     // Re-fetch the current summary page and read the run count from fresh HTML
     async function fetchSummaryRunCount(athleteId) {
         const summaryUrl = `${window.location.origin}/parkrunner/${athleteId}/`;
-        const resp = await fetch(summaryUrl, { credentials: 'include' });
-        if (!resp.ok) throw new Error(`Failed to re-fetch summary: ${resp.status}`);
-        const html = await resp.text();
+        const html = await fetchParkrunPage(summaryUrl, `summary for ${athleteId}`);
         const m = html.match(/(\d+)\s+parkruns?\s+total/i);
-        return m ? parseInt(m[1]) : null;
+        if (!m) {
+            log(`  ⚠ could not find run count in summary page HTML (${html.length} bytes)`, 'warn');
+            return null;
+        }
+        return parseInt(m[1]);
     }
 
     // ─── Core audit logic for a single athlete ───────────────────────────────────
 
     async function auditAthlete(athleteId, athleteName, apiKey) {
+        log(`── ${athleteName} (${athleteId}) ──`, 'info');
+
         // 1. Get parkrun.com total from the summary page.
         // Only read from the current DOM if we're actually on THIS athlete's summary page.
         let pageTotal;
 
         if (summaryMatch && summaryMatch[1] === athleteId) {
-            // We're already on this athlete's summary page — read directly from DOM
+            log(`  Using current page DOM for run count`, 'info');
             pageTotal = getPageRunCount();
         } else {
-            // Fetch the correct athlete's summary page
             pageTotal = await fetchSummaryRunCount(athleteId);
         }
 
         if (pageTotal === null) {
-            log(`⚠ Could not read run count from parkrun.com for ${athleteId}`, 'warn');
+            log(`  ❌ Could not read run count from parkrun.com`, 'err');
             return 'error';
         }
+        log(`  parkrun.com total: ${pageTotal}`, 'info');
 
         // 2. Get DB count
         const db = await getDbRunCount(athleteId);
-        const name = athleteName || db.name || `Athlete ${athleteId}`;
-
-        log(`${name}: parkrun.com=${pageTotal}, db=${db.count}`, db.count === pageTotal ? 'ok' : 'warn');
+        const name = athleteName || `Athlete ${athleteId}`;
+        log(`  DB count: ${db.count}`, db.count === pageTotal ? 'ok' : 'warn');
 
         if (db.count === pageTotal) {
+            log(`  ✅ In sync`, 'ok');
             return 'ok';
         }
 
         // 3. Counts differ — import full history from /all/ page
-        log(`Mismatch (${pageTotal - db.count} missing) — importing full history`, 'warn');
+        const missing = pageTotal - db.count;
+        log(`  ⚠ Mismatch: ${missing > 0 ? missing + ' missing' : Math.abs(missing) + ' extra in DB'} — importing full history`, 'warn');
         await importAllRuns(athleteId, name, apiKey);
 
         // 4. Re-check DB count
         await delay(1500); // brief wait for DB write to settle
         const db2 = await getDbRunCount(athleteId);
-        log(`After import: db=${db2.count}, parkrun.com=${pageTotal}`, db2.count === pageTotal ? 'ok' : 'err');
+        log(`  DB after import: ${db2.count} (expected ${pageTotal})`, db2.count === pageTotal ? 'ok' : 'err');
 
         if (db2.count !== pageTotal) {
-            log(`ERROR: counts still don't match after import (db=${db2.count}, expected=${pageTotal})`, 'err');
+            log(`  ❌ Still mismatched after import`, 'err');
             return 'error';
         }
 
+        log(`  ✅ Fixed`, 'ok');
         return 'fixed';
     }
 
