@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Parkrun Athlete Data Audit
 // @namespace    http://tampermonkey.net/
-// @version      1.6
+// @version      1.7
 // @description  Audits athlete run counts against the database and imports missing runs
 // @author       Woodstock Results
 // @match        https://www.parkrun.com/parkrunner/*/
@@ -429,45 +429,98 @@
         return result;
     }
 
-    // Parse the /all/ page HTML into a CSV string matching the expected import format
+    // Parse the /all/ page HTML into a CSV string matching the expected import format.
+    //
+    // The /all/ page contains THREE tables all with id="results":
+    //   0: stats summary (Fastest/Average/Slowest)
+    //   1: best-per-year summary
+    //   2: full results (Event | Run Date | Run Number | Pos | Time | AgeGrade | PB?)
+    // We want the LAST table (most rows).
+    //
+    // Date format on page is DD/MM/YYYY — converted to YYYY-MM-DD for the DB.
     function parseAllPageToCSV(html, athleteId, athleteName) {
         const parser = new DOMParser();
         const doc = parser.parseFromString(html, 'text/html');
-        const rows = doc.querySelectorAll('table tbody tr, #results tbody tr, .Results-table tbody tr');
-        if (!rows.length) return null;
 
+        // Pick the results table: the one with the most rows, or the last #results table
+        const allTables = [...doc.querySelectorAll('table')];
+        if (!allTables.length) return null;
+
+        // Find the table whose headers include "Event" and "Time" — that's the results table
+        let resultsTable = null;
+        for (const tbl of allTables) {
+            const ths = [...tbl.querySelectorAll('thead th')].map(th => th.textContent.trim().toLowerCase());
+            if (ths.some(h => h.includes('event')) && ths.some(h => h.includes('time'))) {
+                resultsTable = tbl;
+                // Don't break — take the last match in case there are duplicates
+            }
+        }
+        // Fallback: just take the table with the most rows
+        if (!resultsTable) {
+            resultsTable = allTables.reduce((best, t) =>
+                t.querySelectorAll('tbody tr').length > best.querySelectorAll('tbody tr').length ? t : best
+            , allTables[0]);
+        }
+
+        // Build header index from this specific table
+        const headers = [...resultsTable.querySelectorAll('thead th')]
+            .map(th => th.textContent.trim().toLowerCase());
+
+        log(`  Table headers: [${headers.join(', ')}]`, 'info');
+
+        // Map column names to indices (flexible matching)
+        function colIdx(...names) {
+            for (const name of names) {
+                const idx = headers.findIndex(h => h.includes(name));
+                if (idx >= 0) return idx;
+            }
+            return -1;
+        }
+
+        const iEvent    = colIdx('event');
+        const iDate     = colIdx('run date', 'date');
+        const iRunNum   = colIdx('run number', 'run #', '#');
+        const iPos      = colIdx('pos', 'overall');
+        const iTime     = colIdx('time');
+        const iAgeGrade = colIdx('agegrade', 'age grade', 'age%', 'ag');
+        const iPB       = colIdx('pb');
+
+        log(`  Col indices → event:${iEvent} date:${iDate} runNum:${iRunNum} pos:${iPos} time:${iTime} ageGrade:${iAgeGrade} pb:${iPB}`, 'info');
+
+        // Convert DD/MM/YYYY → YYYY-MM-DD
+        function parseDate(raw) {
+            const m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+            if (m) return `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+            // Already YYYY-MM-DD or other format — return as-is
+            return raw;
+        }
+
+        const rows = resultsTable.querySelectorAll('tbody tr');
         const lines = ['Parkrun ID,parkrunner,Event,Date,Run Number,Pos,Time,Age Grade,PB,Data Source'];
         let count = 0;
 
         for (const row of rows) {
-            const cells = row.querySelectorAll('td');
+            const cells = [...row.querySelectorAll('td')];
             if (cells.length < 5) continue;
 
-            // parkrun /all/ table columns: Event | Run Number | Pos | Time | Age Grade | PB
-            // (column order varies slightly by region — try to find by header)
-            const headers = [...doc.querySelectorAll('table thead th, .Results-table thead th')]
-                .map(th => th.textContent.trim().toLowerCase());
-
-            const get = (names) => {
-                for (const name of names) {
-                    const idx = headers.findIndex(h => h.includes(name));
-                    if (idx >= 0 && cells[idx]) return cells[idx].textContent.trim();
-                }
-                // Fallback positional
+            const cell = (idx, fallbackIdx) => {
+                if (idx >= 0 && cells[idx]) return cells[idx].textContent.trim();
+                if (fallbackIdx >= 0 && cells[fallbackIdx]) return cells[fallbackIdx].textContent.trim();
                 return '';
             };
 
-            const event    = get(['event'])      || cells[0]?.textContent.trim();
-            const date     = get(['date'])        || cells[1]?.textContent.trim();
-            const runNum   = get(['run', '#'])    || cells[2]?.textContent.trim() || '0';
-            const pos      = get(['pos', 'overall']) || cells[3]?.textContent.trim() || '0';
-            const time     = get(['time'])        || cells[4]?.textContent.trim();
-            const ageGrade = get(['age grade', 'age%']) || cells[5]?.textContent.trim() || '';
-            const pb       = get(['pb'])          || cells[6]?.textContent.trim() || '';
+            const event    = cell(iEvent,    0);
+            const rawDate  = cell(iDate,     1);
+            const runNum   = cell(iRunNum,   2) || '0';
+            const pos      = cell(iPos,      3) || '0';
+            const time     = cell(iTime,     4);
+            const ageGrade = cell(iAgeGrade, 5) || '';
+            const pb       = cell(iPB,       6) || '';
 
             if (!event || !time) continue;
 
-            // Escape CSV fields
+            const date = parseDate(rawDate);
+
             const esc = v => `"${(v || '').replace(/"/g, '""')}"`;
             lines.push([
                 esc(athleteId),
