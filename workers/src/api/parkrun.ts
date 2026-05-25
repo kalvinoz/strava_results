@@ -802,11 +802,6 @@ export async function getParkrunMilestones(request: Request, env: Env): Promise<
     }
 
     // Get all visible athletes and their current total run counts for upcoming milestones
-    // Only include athletes who have run in the last 4 weeks (28 days)
-    const fourWeeksAgo = new Date(targetDate);
-    fourWeeksAgo.setDate(fourWeeksAgo.getDate() - 27); // 28 days including targetDate
-    const fourWeeksAgoStr = fourWeeksAgo.toISOString().split('T')[0];
-
     const allAthletes = await env.DB.prepare(
       `SELECT
         pr.athlete_name,
@@ -816,14 +811,8 @@ export async function getParkrunMilestones(request: Request, env: Env): Promise<
        LEFT JOIN parkrun_athletes pa ON pr.athlete_name = pa.athlete_name
        WHERE pr.date <= ?
          AND (pa.is_hidden IS NULL OR pa.is_hidden = 0)
-         AND EXISTS (
-           SELECT 1 FROM parkrun_results pr2
-           WHERE pr2.athlete_name = pr.athlete_name
-             AND pr2.date >= ?
-             AND pr2.date <= ?
-         )
        GROUP BY pr.athlete_name`
-    ).bind(targetDate, fourWeeksAgoStr, targetDate).all<{ athlete_name: string; parkrun_id: string | null; total: number }>();
+    ).bind(targetDate).all<{ athlete_name: string; parkrun_id: string | null; total: number }>();
 
     // Check for upcoming milestones (within 98% but not yet reached)
     for (const athlete of (allAthletes.results || [])) {
