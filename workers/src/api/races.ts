@@ -746,7 +746,7 @@ export async function updateRaceVisibility(
     if (race.athlete_id) {
       await env.DB.prepare(
         `INSERT INTO activity_event_mappings (strava_activity_id, athlete_id, event_name, is_hidden, updated_at)
-         VALUES (?, ?, COALESCE((SELECT event_name FROM activity_event_mappings WHERE strava_activity_id = ? AND athlete_id = ?), NULL), ?, strftime('%s', 'now'))
+         VALUES (?, ?, COALESCE((SELECT event_name FROM activity_event_mappings WHERE strava_activity_id = ? AND athlete_id = ?), ''), ?, strftime('%s', 'now'))
          ON CONFLICT(strava_activity_id, athlete_id)
          DO UPDATE SET is_hidden = excluded.is_hidden, updated_at = excluded.updated_at`
       )
@@ -1123,7 +1123,7 @@ export async function bulkEditRaces(
         // Persist visibility to mapping table so it survives full syncs
         await env.DB.prepare(
           `INSERT INTO activity_event_mappings (strava_activity_id, athlete_id, event_name, is_hidden, updated_at)
-           VALUES (?, ?, COALESCE((SELECT event_name FROM activity_event_mappings WHERE strava_activity_id = ? AND athlete_id = ?), NULL), ?, strftime('%s', 'now'))
+           VALUES (?, ?, COALESCE((SELECT event_name FROM activity_event_mappings WHERE strava_activity_id = ? AND athlete_id = ?), ''), ?, strftime('%s', 'now'))
            ON CONFLICT(strava_activity_id, athlete_id)
            DO UPDATE SET is_hidden = excluded.is_hidden, updated_at = excluded.updated_at`
         )
