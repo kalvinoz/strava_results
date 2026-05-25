@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Parkrun Athlete Data Audit
 // @namespace    http://tampermonkey.net/
-// @version      1.8
+// @version      1.9
 // @description  Audits athlete run counts against the database and imports missing runs
 // @author       Woodstock Results
 // @match        https://www.parkrun.com/parkrunner/*/
@@ -180,6 +180,32 @@
         #pr-audit-panel .summary-row .sr-detail.fixed { color: #15803d; }
         #pr-audit-panel .summary-row .sr-detail.error { color: #b91c1c; }
         #pr-audit-panel .summary-empty { font-size: 12px; color: #888; padding: 4px 8px; }
+
+        /* CAPTCHA pause banner — shown inside the panel when human-check is detected */
+        #pr-audit-captcha {
+            display: none;
+            margin: 10px 0 0;
+            padding: 12px 14px;
+            background: #fff7ed;
+            border: 2px solid #fb923c;
+            border-radius: 8px;
+            font-size: 13px;
+            color: #9a3412;
+        }
+        #pr-audit-captcha .cap-title {
+            font-weight: 700; font-size: 14px; margin-bottom: 6px;
+            display: flex; align-items: center; gap: 6px;
+        }
+        #pr-audit-captcha .cap-msg { margin-bottom: 10px; line-height: 1.5; }
+        #pr-audit-captcha .btn-resume {
+            display: inline-block;
+            padding: 8px 16px;
+            background: linear-gradient(135deg, #f97316 0%, #ea580c 100%);
+            color: white; border: none; border-radius: 6px;
+            font-size: 13px; font-weight: 700; cursor: pointer;
+            box-shadow: 0 2px 8px rgba(249,115,22,0.35);
+        }
+        #pr-audit-captcha .btn-resume:hover { opacity: 0.9; }
     `);
 
     // ─── UI elements ─────────────────────────────────────────────────────────────
@@ -209,6 +235,11 @@
                 <div class="cur-val" id="pa-cur">—</div>
             </div>
             <div class="log" id="pa-log"></div>
+            <div id="pr-audit-captcha">
+                <div class="cap-title">🤖 Human check detected</div>
+                <div class="cap-msg">parkrun is asking you to verify you're human.<br>Complete the challenge in the tab that just opened, then click Resume.</div>
+                <button class="btn-resume">▶ Resume audit</button>
+            </div>
         </div>
     `;
     document.body.appendChild(panel);
@@ -219,6 +250,14 @@
         stopped = true;
         log('Stopped by user', 'warn');
         setBtn('idle');
+        // If we're paused waiting for CAPTCHA resolution, dismiss the banner and reject
+        if (_captchaResumeResolve) {
+            const { reject, tab } = _captchaResumeResolve;
+            _captchaResumeResolve = null;
+            document.getElementById('pr-audit-captcha').style.display = 'none';
+            try { if (tab && !tab.closed) tab.close(); } catch (e) { /* ignore */ }
+            reject(new Error('Stopped by user'));
+        }
     });
 
     // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -353,6 +392,58 @@
     }
 
     function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    // ─── CAPTCHA / human-check handling ─────────────────────────────────────────
+
+    // Returns true if the HTML looks like a CAPTCHA / bot-check page.
+    function isCaptchaPage(html) {
+        const lower = html.toLowerCase();
+        return (
+            lower.includes("let's confirm you are human") ||
+            lower.includes("confirm you are human") ||
+            lower.includes("please verify you are human") ||
+            lower.includes('cf-challenge') ||
+            lower.includes('cf_chl_') ||
+            lower.includes('challenge-platform') ||
+            lower.includes('captcha')
+        );
+    }
+
+    // Show the CAPTCHA banner, open the URL in a new tab, and wait for user to click Resume.
+    // Returns a Promise that resolves when the user clicks Resume (or rejects if they stop the audit).
+    let _captchaResumeResolve = null;
+
+    function waitForCaptchaResume(url) {
+        return new Promise((resolve, reject) => {
+            const banner = document.getElementById('pr-audit-captcha');
+            const resumeBtn = banner.querySelector('.btn-resume');
+
+            // Update message with the URL domain
+            banner.querySelector('.cap-msg').innerHTML =
+                `parkrun is asking you to verify you're human.<br>Complete the challenge in the tab that just opened, then click <strong>Resume</strong>.`;
+
+            // Open the challenge URL in a new tab
+            let tab = null;
+            try { tab = window.open(url, '_blank'); } catch (e) { /* popup blocked */ }
+            if (!tab) {
+                banner.querySelector('.cap-msg').innerHTML =
+                    `parkrun is asking you to verify you're human, but the tab couldn't open (popup blocked?).<br>
+                     Please open <a href="${url}" target="_blank" style="color:#9a3412">this link</a> manually, complete the challenge, then click <strong>Resume</strong>.`;
+            }
+
+            banner.style.display = 'block';
+            btn.textContent = '⏸ Paused — solve captcha';
+
+            _captchaResumeResolve = { resolve, reject, tab };
+
+            resumeBtn.onclick = () => {
+                banner.style.display = 'none';
+                btn.textContent = '⏳ Auditing...';
+                _captchaResumeResolve = null;
+                resolve(tab);
+            };
+        });
+    }
 
     // ─── Page scraping helpers ───────────────────────────────────────────────────
 
@@ -557,23 +648,41 @@
         return { text: lines.join('\n'), rowCount: count };
     }
 
-    // Fetch a parkrun page URL with retries and new-tab fallback on failure.
+    // Fetch a parkrun page URL with retries, CAPTCHA pause, and new-tab fallback on failure.
     // Returns the response HTML string, or throws after all retries exhausted.
     async function fetchParkrunPage(url, label, maxRetries = 3) {
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
-            log(`  → fetching ${label} (attempt ${attempt}/${maxRetries}): ${url}`, 'info');
+            log(`  → fetching ${label} (attempt ${attempt}/${maxRetries})`, 'info');
             try {
                 const resp = await fetch(url, { credentials: 'include' });
                 log(`  ← ${resp.status} ${resp.statusText || ''} for ${label}`, resp.ok ? 'info' : 'warn');
-                if (resp.ok) return await resp.text();
 
-                // 405 / 4xx — try opening a new tab to refresh the session cookie
+                if (resp.ok) {
+                    const html = await resp.text();
+
+                    // parkrun sometimes returns 200 with a CAPTCHA/human-check page
+                    if (isCaptchaPage(html)) {
+                        log(`  🤖 Human-check page detected — pausing for verification…`, 'warn');
+                        // waitForCaptchaResume opens the URL in a new tab and resolves when
+                        // the user clicks Resume. The tab reference is returned so we can close it.
+                        const tab = await waitForCaptchaResume(url);
+                        try { if (tab && !tab.closed) tab.close(); } catch (e) { /* ignore */ }
+                        log(`  ↺ Resumed — retrying fetch…`, 'info');
+                        // Don't count this as an attempt — loop again without incrementing
+                        attempt--;
+                        continue;
+                    }
+
+                    return html;
+                }
+
+                // 4xx / 5xx — try opening a new tab to refresh the session cookie
                 if (attempt < maxRetries) {
                     log(`  ⚠ ${resp.status} error — opening new tab to refresh session…`, 'warn');
                     try {
                         const tab = window.open(url, '_blank');
                         if (tab) {
-                            await delay(3000); // give the tab time to load and set cookies
+                            await delay(3000);
                             tab.close();
                             log(`  ↺ session tab closed, retrying…`, 'info');
                         } else {
