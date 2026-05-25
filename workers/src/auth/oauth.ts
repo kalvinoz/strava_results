@@ -231,7 +231,7 @@ export async function handleCallback(
     // Redirect to frontend dashboard with athlete ID in URL
     // The frontend will store it in its own localStorage
     setTimeout(() => {
-      window.location.href = 'https://woodstock-results.pages.dev/dashboard?athlete_id=${tokenData.athlete.id}';
+      window.location.href = 'https://woodstock-results.pages.dev/?athlete_id=${tokenData.athlete.id}';
     }, 2000);
 
     // If opened in a popup, close it after 3 seconds

@@ -21,6 +21,19 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    // Handle Strava OAuth callback — the worker redirects here with ?athlete_id=
+    // This catches the case where ProtectedRoute (/dashboard) would have stripped
+    // the param, and also handles mobile in-app browser contexts.
+    const urlParams = new URLSearchParams(window.location.search);
+    const athleteIdFromUrl = urlParams.get('athlete_id');
+    if (athleteIdFromUrl) {
+      localStorage.setItem('strava_athlete_id', athleteIdFromUrl);
+      // Clean the URL then send the user into the app
+      window.history.replaceState({}, '', '/');
+      window.location.replace('/races');
+      return;
+    }
+
     fetchStats();
     checkAdminStatus();
     checkLoggedInStatus();
