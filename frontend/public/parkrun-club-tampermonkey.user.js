@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Parkrun Club Results Scraper
 // @namespace    http://tampermonkey.net/
-// @version      2.1
+// @version      2.2
 // @description  Scrapes Woodstock Runners parkrun club results - auto-starts on weekends, or click the floating button
 // @author       Woodstock Results
 // @match        https://www.parkrun.com/results/consolidatedclub/*
@@ -137,6 +137,32 @@
         #pr-club-panel .log .info { color: #60a5fa; }
         #pr-club-panel .log .warn { color: #fbbf24; }
 
+        /* New runners notice — shown after scraping completes */
+        #pc-new-runners {
+            display: none;
+            margin-top: 10px;
+            padding: 10px 12px;
+            background: #fffbeb;
+            border: 2px solid #f59e0b;
+            border-radius: 8px;
+            font-size: 12px;
+            color: #78350f;
+        }
+        #pc-new-runners .nr-title {
+            font-weight: 700; font-size: 13px; margin-bottom: 6px;
+        }
+        #pc-new-runners .nr-list {
+            list-style: none; margin: 0; padding: 0;
+        }
+        #pc-new-runners .nr-list li {
+            padding: 3px 0; border-bottom: 1px solid #fde68a;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        #pc-new-runners .nr-list li:last-child { border-bottom: none; }
+        #pc-new-runners .nr-list a {
+            color: #d97706; font-size: 11px; white-space: nowrap; margin-left: 8px;
+        }
+
         /* Modal styles */
         #parkrun-club-modal {
             position: fixed;
@@ -238,6 +264,10 @@
                 <div class="cur-val" id="pc-cur">—</div>
             </div>
             <div class="log" id="pc-log"></div>
+            <div id="pc-new-runners">
+                <div class="nr-title">🆕 New runners — full history needed</div>
+                <ul class="nr-list" id="pc-new-runners-list"></ul>
+            </div>
         </div>
     `;
     document.body.appendChild(panel);
@@ -279,6 +309,53 @@
         const log = document.getElementById('pc-log');
         if (log) log.innerHTML = '';
         setCur('—');
+        const nr = document.getElementById('pc-new-runners');
+        if (nr) nr.style.display = 'none';
+        const nrList = document.getElementById('pc-new-runners-list');
+        if (nrList) nrList.innerHTML = '';
+    }
+
+    // ─── New-runner check ────────────────────────────────────────────────────────
+    // Called after scraping completes. Queries athletes-to-scrape?mode=new to find
+    // any athletes whose full history hasn't been fetched yet (appeared for the first
+    // time in this scrape, or previously failed). Shows them in the panel.
+    async function checkNewRunners(apiKey) {
+        try {
+            const resp = await fetch(
+                'https://strava-club-workers.pedroqueiroz.workers.dev/api/parkrun/athletes-to-scrape?mode=new',
+                { headers: { 'X-API-Key': apiKey } }
+            );
+            if (!resp.ok) {
+                panelLog(`⚠ Could not check for new runners (${resp.status})`, 'warn');
+                return;
+            }
+            const data = await resp.json();
+            const athletes = data.athletes || [];
+            if (athletes.length === 0) return;
+
+            panelLog(`🆕 ${athletes.length} runner(s) need their full history fetched`, 'warn');
+
+            const nr = document.getElementById('pc-new-runners');
+            const list = document.getElementById('pc-new-runners-list');
+            list.innerHTML = '';
+            for (const a of athletes) {
+                const id = (a.parkrun_athlete_id || '').replace(/^A/i, '');
+                const li = document.createElement('li');
+                const name = document.createTextNode(a.athlete_name);
+                li.appendChild(name);
+                if (id) {
+                    const link = document.createElement('a');
+                    link.href = `https://www.parkrun.com.au/parkrunner/${id}/all/`;
+                    link.target = '_blank';
+                    link.textContent = 'open /all/ ↗';
+                    li.appendChild(link);
+                }
+                list.appendChild(li);
+            }
+            nr.style.display = 'block';
+        } catch (e) {
+            panelLog(`⚠ Error checking new runners: ${e.message}`, 'warn');
+        }
     }
 
     // ─── Console interceptor ────────────────────────────────────────────────────
@@ -652,6 +729,7 @@
                     button.className = 'completed';
                     sessionStorage.removeItem(STORAGE_KEY);
                     sessionStorage.removeItem('parkrun_scraper_completed');
+                    checkNewRunners(config.apiKey);
                     resetButton(5000);
                 }
             }, 1000);
