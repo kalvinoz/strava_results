@@ -1,2 +1,3 @@
-/api/* https://strava-club-workers.pedroqueiroz.workers.dev/api/:splat 200
-/auth/* https://strava-club-workers.pedroqueiroz.workers.dev/auth/:splat 200
+# API and auth proxying is handled by Pages Functions in /functions/
+# (functions/api/[[path]].ts and functions/auth/[[path]].ts)
+# No _redirects rules needed for those paths.
