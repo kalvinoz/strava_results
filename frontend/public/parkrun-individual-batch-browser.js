@@ -393,6 +393,13 @@
       continue;
     }
 
+    // Validate time looks like MM:SS or H:MM:SS — not a percentage or other junk
+    // (Guards against wrong-column data caused by page layout changes)
+    if (!/^\d{1,2}:\d{2}(:\d{2})?$/.test(time)) {
+      console.warn('⚠️  Skipping row with invalid time format (got: ' + time + ') — columns may have shifted');
+      continue;
+    }
+
     // Build result object
     const result = {
       'Parkrun ID': currentAthlete.parkrun_athlete_id,

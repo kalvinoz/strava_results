@@ -899,11 +899,18 @@ export async function getParkrunCountByAthleteId(request: Request, env: Env): Pr
 
   try {
     const result = await env.DB.prepare(
-      `SELECT COUNT(*) as count FROM parkrun_results WHERE parkrun_athlete_id = ?`
-    ).bind(parkrunAthleteId).first<{ count: number }>();
+      `SELECT
+         COUNT(*) as count,
+         SUM(CASE WHEN time_seconds = 0 OR time_string = '' OR time_string IS NULL THEN 1 ELSE 0 END) as bad_time_count
+       FROM parkrun_results WHERE parkrun_athlete_id = ?`
+    ).bind(parkrunAthleteId).first<{ count: number; bad_time_count: number }>();
 
     return new Response(
-      JSON.stringify({ count: result?.count ?? 0, parkrun_athlete_id: parkrunAthleteId }),
+      JSON.stringify({
+        count: result?.count ?? 0,
+        bad_time_count: result?.bad_time_count ?? 0,
+        parkrun_athlete_id: parkrunAthleteId,
+      }),
       { headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } }
     );
   } catch (error) {

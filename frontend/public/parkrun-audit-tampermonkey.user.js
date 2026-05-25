@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Parkrun Athlete Data Audit
 // @namespace    http://tampermonkey.net/
-// @version      2.1
+// @version      2.2
 // @description  Audits athlete run counts against the database and imports missing runs
 // @author       Woodstock Results
 // @match        https://www.parkrun.com/parkrunner/*/
@@ -495,7 +495,7 @@
         const resp = await fetch(`${API_BASE}/api/parkrun/count-by-athlete-id?parkrun_athlete_id=${encodeURIComponent(athleteId)}`);
         if (!resp.ok) throw new Error(`Count API error: ${resp.status}`);
         const data = await resp.json();
-        return { count: data.count ?? 0, name: null, found: (data.count ?? 0) > 0 };
+        return { count: data.count ?? 0, badTimeCount: data.bad_time_count ?? 0, found: (data.count ?? 0) > 0 };
     }
 
     // Record a successful audit timestamp for this athlete in the DB.
@@ -736,30 +736,45 @@
         }
         log(`  parkrun.com total: ${pageTotal}`, 'info');
 
-        // 2. Get DB count
+        // 2. Get DB count + bad-time count
         const db = await getDbRunCount(athleteId);
         const name = athleteName || `Athlete ${athleteId}`;
-        log(`  DB count: ${db.count}`, db.count === pageTotal ? 'ok' : 'warn');
 
-        if (db.count === pageTotal) {
+        const countMatch = db.count === pageTotal;
+        const hasBadTimes = db.badTimeCount > 0;
+
+        log(`  DB count: ${db.count}${hasBadTimes ? ` (⚠ ${db.badTimeCount} with 0:00 time)` : ''}`,
+            countMatch && !hasBadTimes ? 'ok' : 'warn');
+
+        if (countMatch && !hasBadTimes) {
             log(`  ✅ In sync`, 'ok');
             await markAudited(athleteId, apiKey);
             return { status: 'ok', pageTotal, dbBefore: db.count, dbAfter: db.count };
         }
 
-        // 3. Counts differ — import full history from /all/ page
-        const missing = pageTotal - db.count;
-        log(`  ⚠ Mismatch: ${missing > 0 ? missing + ' missing' : Math.abs(missing) + ' extra in DB'} — importing full history`, 'warn');
+        // 3. Count mismatch or bad times — re-import full history from /all/ page
+        if (!countMatch) {
+            const missing = pageTotal - db.count;
+            log(`  ⚠ Count mismatch: ${missing > 0 ? missing + ' missing' : Math.abs(missing) + ' extra in DB'} — importing full history`, 'warn');
+        }
+        if (hasBadTimes) {
+            log(`  ⚠ ${db.badTimeCount} runs have 0:00 time — re-importing to fix`, 'warn');
+        }
         await importAllRuns(athleteId, name, apiKey);
 
-        // 4. Re-check DB count
-        await delay(1500); // brief wait for DB write to settle
+        // 4. Re-check
+        await delay(1500);
         const db2 = await getDbRunCount(athleteId);
-        log(`  DB after import: ${db2.count} (expected ${pageTotal})`, db2.count === pageTotal ? 'ok' : 'err');
+        const stillBad = db2.badTimeCount > 0;
+        log(`  DB after import: ${db2.count}${stillBad ? ` (still ${db2.badTimeCount} bad times)` : ''} (expected ${pageTotal})`,
+            db2.count === pageTotal && !stillBad ? 'ok' : 'err');
 
-        if (db2.count !== pageTotal) {
-            log(`  ❌ Still mismatched after import`, 'err');
-            return { status: 'error', reason: `DB has ${db2.count}, parkrun.com has ${pageTotal} after import`, pageTotal, dbBefore: db.count, dbAfter: db2.count };
+        if (db2.count !== pageTotal || stillBad) {
+            const reason = db2.count !== pageTotal
+                ? `DB has ${db2.count}, parkrun.com has ${pageTotal} after import`
+                : `${db2.badTimeCount} runs still have 0:00 time after re-import`;
+            log(`  ❌ ${reason}`, 'err');
+            return { status: 'error', reason, pageTotal, dbBefore: db.count, dbAfter: db2.count };
         }
 
         log(`  ✅ Fixed`, 'ok');
