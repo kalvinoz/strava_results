@@ -160,7 +160,7 @@ export async function importIndividualParkrunCSV(request: Request, env: Env): Pr
       // Using 20 for existence checks (60 variables) and separate limit for inserts
       const EXISTENCE_BATCH_SIZE = 20;
       const STATEMENT_BATCH_SIZE = 50; // Each INSERT has 10 vars = 500 total
-      const existingResults = new Map<string, { id: number; data_source: string | null }>();
+      const existingResults = new Map<string, { id: number; data_source: string | null; time_seconds: number }>();
 
       for (let i = 0; i < processedRows.length; i += EXISTENCE_BATCH_SIZE) {
         const batch = processedRows.slice(i, i + EXISTENCE_BATCH_SIZE);
@@ -173,14 +173,14 @@ export async function importIndividualParkrunCSV(request: Request, env: Env): Pr
         });
 
         const existingQuery = await env.DB.prepare(
-          `SELECT id, parkrun_athlete_id, event_name, date, data_source
+          `SELECT id, parkrun_athlete_id, event_name, date, data_source, time_seconds
            FROM parkrun_results
            WHERE ${placeholders}`
-        ).bind(...bindings).all<{ id: number; parkrun_athlete_id: string; event_name: string; date: string; data_source: string | null }>();
+        ).bind(...bindings).all<{ id: number; parkrun_athlete_id: string; event_name: string; date: string; data_source: string | null; time_seconds: number }>();
 
         for (const result of (existingQuery.results || [])) {
           const key = `${result.parkrun_athlete_id}|${result.event_name}|${result.date}`;
-          existingResults.set(key, { id: result.id, data_source: result.data_source });
+          existingResults.set(key, { id: result.id, data_source: result.data_source, time_seconds: result.time_seconds });
         }
       }
 
@@ -205,8 +205,20 @@ export async function importIndividualParkrunCSV(request: Request, env: Env): Pr
               ).bind(row.parkrunId, row.ageGrade, existing.id)
             );
             imported++;
+          } else if (existing.time_seconds === 0 && row.timeSeconds > 0) {
+            // Existing individual row has bad time data (0 seconds) — overwrite with correct values
+            updateStatements.push(
+              env.DB.prepare(
+                `UPDATE parkrun_results
+                 SET time_seconds = ?, time_string = ?, position = ?, event_number = ?,
+                     age_grade = ?, parkrun_athlete_id = ?
+                 WHERE id = ?`
+              ).bind(row.timeSeconds, row.timeString, row.position, row.runNumber,
+                     row.ageGrade, row.parkrunId, existing.id)
+            );
+            imported++;
           } else {
-            // Already exists from individual scraping - skip
+            // Already exists with good data from individual scraping - skip
             duplicatesSkipped++;
           }
         } else {
