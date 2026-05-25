@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Parkrun Athlete Data Audit
 // @namespace    http://tampermonkey.net/
-// @version      1.3
+// @version      1.4
 // @description  Audits athlete run counts against the database and imports missing runs
 // @author       Woodstock Results
 // @match        https://www.parkrun.com/parkrunner/*/
@@ -393,14 +393,15 @@
     // ─── Core audit logic for a single athlete ───────────────────────────────────
 
     async function auditAthlete(athleteId, athleteName, apiKey) {
-        // 1. Get parkrun.com total from the summary page
-        const summaryUrl = `${window.location.origin}/parkrunner/${athleteId}/`;
+        // 1. Get parkrun.com total from the summary page.
+        // Only read from the current DOM if we're actually on THIS athlete's summary page.
         let pageTotal;
 
-        if (summaryMatch) {
-            // We're already on the summary page
+        if (summaryMatch && summaryMatch[1] === athleteId) {
+            // We're already on this athlete's summary page — read directly from DOM
             pageTotal = getPageRunCount();
         } else {
+            // Fetch the correct athlete's summary page
             pageTotal = await fetchSummaryRunCount(athleteId);
         }
 
